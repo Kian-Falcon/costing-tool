@@ -1,0 +1,6 @@
+legacy/
+node_modules/
+apps/web/.next/
+dev-server*.log
+*.xlsx
+*.csv

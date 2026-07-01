@@ -1,0 +1,260 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Organization {
+  id        String   @id @default(cuid())
+  name      String
+  users     User[]
+  projects  Project[]
+  rates     RateItem[]
+  vendors   Vendor[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model User {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  email          String       @unique
+  name           String?
+  role           UserRole     @default(MEMBER)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+}
+
+model Project {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  name           String
+  clientName     String?
+  boqs           Boq[]
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+}
+
+model Boq {
+  id        String    @id @default(cuid())
+  projectId String
+  project   Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  title     String
+  items     BoqItem[]
+  sourceFileId String?
+  sourceFile   UploadedFile? @relation(fields: [sourceFileId], references: [id])
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model BoqItem {
+  id          String   @id @default(cuid())
+  boqId       String
+  boq         Boq      @relation(fields: [boqId], references: [id], onDelete: Cascade)
+  code        String?
+  name        String
+  productType String
+  constructionType String?
+  dimensions  String
+  quantity    Decimal  @db.Decimal(12, 3)
+  margin      Decimal  @db.Decimal(5, 2)
+  spec        String?
+  aiSpec      String?
+  rawOverride Decimal? @db.Decimal(14, 2)
+  manualFactory Decimal? @db.Decimal(14, 2)
+  corrections BoqItemCorrection[]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model BoqItemCorrection {
+  id        String   @id @default(cuid())
+  boqItemId String
+  boqItem   BoqItem  @relation(fields: [boqItemId], references: [id], onDelete: Cascade)
+  field     String
+  oldValue  Json?
+  newValue  Json
+  reason    String?
+  createdAt DateTime @default(now())
+}
+
+model TrainingSource {
+  id          String          @id @default(cuid())
+  filename    String
+  rowCount    Int
+  importedAt  DateTime        @default(now())
+  products    CorpusProduct[]
+  fileId      String?
+  file        UploadedFile?    @relation(fields: [fileId], references: [id])
+}
+
+model CorpusProduct {
+  id             String         @id @default(cuid())
+  trainingSourceId String
+  trainingSource   TrainingSource @relation(fields: [trainingSourceId], references: [id], onDelete: Cascade)
+  brand          String?
+  itemNo         String?
+  productName    String
+  size           String
+  productType    String
+  constructionType String?
+  lengthMm       Decimal?       @db.Decimal(12, 2)
+  widthMm        Decimal?       @db.Decimal(12, 2)
+  heightMm       Decimal?       @db.Decimal(12, 2)
+  planAreaSqm    Decimal?       @db.Decimal(12, 4)
+  totalInr       Decimal?       @db.Decimal(14, 2)
+  materialQuantities CorpusMaterialQuantity[]
+}
+
+model CorpusMaterialQuantity {
+  id              String        @id @default(cuid())
+  corpusProductId String
+  corpusProduct   CorpusProduct @relation(fields: [corpusProductId], references: [id], onDelete: Cascade)
+  materialKey     String
+  quantity        Decimal       @db.Decimal(14, 4)
+  unit            String
+}
+
+model TrainedModel {
+  id          String   @id @default(cuid())
+  productType String
+  constructionType String?
+  predictor   String
+  coefficients Json
+  metrics      Json
+  sourceVersion String
+  createdAt    DateTime @default(now())
+}
+
+model RatioNorm {
+  id          String   @id @default(cuid())
+  productType String
+  materialKey String
+  quantityPerSqm Decimal @db.Decimal(14, 4)
+  sourceVersion String
+  createdAt DateTime @default(now())
+}
+
+model RateItem {
+  id             String       @id @default(cuid())
+  organizationId String?
+  organization   Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  key            String
+  label          String
+  rate           Decimal      @db.Decimal(14, 2)
+  unit           String
+  category       String
+  source         String
+  custom         Boolean      @default(false)
+  versionId      String?
+  version        RateVersion? @relation(fields: [versionId], references: [id])
+  vendorMaterials VendorMaterial[]
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@unique([organizationId, key])
+}
+
+model RateVersion {
+  id        String     @id @default(cuid())
+  label     String
+  notes     String?
+  rates     RateItem[]
+  createdAt DateTime   @default(now())
+}
+
+model Vendor {
+  id             String       @id @default(cuid())
+  organizationId String?
+  organization   Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  name           String
+  contacts       Json?
+  materials      VendorMaterial[]
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+}
+
+model VendorMaterial {
+  id        String   @id @default(cuid())
+  vendorId  String
+  vendor    Vendor   @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  rateItemId String?
+  rateItem  RateItem? @relation(fields: [rateItemId], references: [id])
+  materialName String
+  lastRate Decimal? @db.Decimal(14, 2)
+}
+
+model UploadedFile {
+  id        String   @id @default(cuid())
+  filename  String
+  mimeType  String
+  sizeBytes Int
+  storageKey String
+  boqs      Boq[]
+  trainingSources TrainingSource[]
+  pdfPages  PdfPage[]
+  createdAt DateTime @default(now())
+}
+
+model PdfPage {
+  id        String       @id @default(cuid())
+  fileId    String
+  file      UploadedFile @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  pageNo    Int
+  text      String?
+  imageKey  String?
+}
+
+model AiRequest {
+  id            String   @id @default(cuid())
+  provider      String
+  modelId       String
+  promptVersion String
+  requestHash   String
+  prompt        Json
+  status        String
+  result        AiResult?
+  cacheEntry    AiCacheEntry?
+  createdAt     DateTime @default(now())
+}
+
+model AiResult {
+  id          String    @id @default(cuid())
+  aiRequestId String    @unique
+  aiRequest   AiRequest @relation(fields: [aiRequestId], references: [id], onDelete: Cascade)
+  output      Json
+  usage       Json?
+  error       String?
+  createdAt   DateTime  @default(now())
+}
+
+model AiCacheEntry {
+  id          String    @id @default(cuid())
+  signature   String    @unique
+  aiRequestId String    @unique
+  aiRequest   AiRequest @relation(fields: [aiRequestId], references: [id], onDelete: Cascade)
+  output      Json
+  createdAt   DateTime  @default(now())
+}
+
+model ExportJob {
+  id        String   @id @default(cuid())
+  kind      String
+  status    String
+  input     Json
+  outputKey String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+enum UserRole {
+  OWNER
+  ADMIN
+  MEMBER
+  VIEWER
+}

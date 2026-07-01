@@ -1,0 +1,27 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/shared" },
+    { "path": "packages/costing-engine" },
+    { "path": "packages/importers" },
+    { "path": "apps/web" }
+  ],
+  "compilerOptions": {
+    "composite": true,
+    "strict": true,
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "resolveJsonModule": true,
+    "allowSyntheticDefaultImports": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "baseUrl": ".",
+    "paths": {
+      "@kf/shared": ["packages/shared/src/index.ts"],
+      "@kf/costing-engine": ["packages/costing-engine/src/index.ts"],
+      "@kf/importers": ["packages/importers/src/index.ts"]
+    }
+  }
+}

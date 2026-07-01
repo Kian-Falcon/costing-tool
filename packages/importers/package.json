@@ -1,0 +1,17 @@
+{
+  "name": "@kf/importers",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "scripts": {
+    "test": "vitest run packages/importers",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@kf/costing-engine": "0.1.0",
+    "@kf/shared": "0.1.0",
+    "xlsx": "^0.18.5"
+  }
+}

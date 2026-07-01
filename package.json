@@ -1,0 +1,36 @@
+{
+  "name": "kian-falcon-costing",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "npm@10.8.2",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace @kf/web",
+    "build": "npm run build --workspaces --if-present",
+    "build:web": "npm run build --workspace @kf/web",
+    "start:web": "npm run start --workspace @kf/web",
+    "lint": "npm run lint --workspaces --if-present",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc -b",
+    "format": "prettier --write .",
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate dev",
+    "import:master": "tsx scripts/import-master-costing.ts",
+    "import:rates": "tsx scripts/import-rm-rates.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.12",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "eslint": "^9.7.0",
+    "prettier": "^3.3.3",
+    "prisma": "^5.17.0",
+    "tsx": "^4.16.2",
+    "typescript": "^5.5.4",
+    "vitest": "^2.0.5"
+  }
+}

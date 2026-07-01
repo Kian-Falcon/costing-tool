@@ -1,0 +1,29 @@
+# dependencies
+node_modules/
+.pnp.*
+
+# env and secrets
+.env
+.env.*
+!.env.example
+config.local.js
+
+# build output
+.next/
+out/
+dist/
+coverage/
+*.tsbuildinfo
+
+# uploads/cache/logs
+uploads/
+.cache/
+*.log
+server.out.log
+server.err.log
+
+# local tooling
+.DS_Store
+Thumbs.db
+.claude/settings.local.json
+~$*.xlsx
