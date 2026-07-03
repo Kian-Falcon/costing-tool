@@ -96,6 +96,7 @@ export function CostingWorkspace() {
     }
 
     void refreshProjects();
+    void refreshLibraries();
 
     if (!saved) return;
     try {
@@ -126,9 +127,10 @@ export function CostingWorkspace() {
 
   async function importTraining(file: File) {
     setBusy("training");
-    const result = await postFile<{ products: CorpusProduct[]; rowsRead: number; rowsImported: number }>("/api/imports/master-costing", file);
+    const result = await postFile<{ sourceFile: string; products: CorpusProduct[]; rowsRead: number; rowsImported: number }>("/api/imports/master-costing", file);
     setImports((current) => ({ ...current, corpus: result.products, trainingRows: result.rowsRead }));
     setMessage(`Imported ${result.rowsImported} corpus products from ${file.name}.`);
+    void saveTrainingSource(result.sourceFile, result.rowsRead, result.products);
     setBusy(null);
   }
 
@@ -137,6 +139,8 @@ export function CostingWorkspace() {
     const result = await postFile<{ rates: RateItem[]; vendors: VendorLink[]; rowsRead: number; rowsImported: number }>("/api/imports/rm-rates", file);
     setImports((current) => ({ ...current, rates: result.rates, vendors: result.vendors, rateRows: result.rowsRead }));
     setMessage(`Imported ${result.rowsImported} rate keys and ${result.vendors.length} vendor/material links.`);
+    void saveRates(result.rates);
+    void saveVendors(result.vendors);
     setBusy(null);
   }
 
@@ -177,28 +181,36 @@ export function CostingWorkspace() {
   }
 
   function updateItem(itemId: string, patch: Partial<BoqItem>) {
+    const previous = items.find((item) => item.id === itemId);
     setItems((current) => current.map((item) => (item.id === itemId ? { ...item, ...patch } : item)));
     setCosted((current) => current.filter((row) => row.item.id !== itemId));
+    if (previous) void logCorrections(previous, patch);
     setMessage("Row updated. Re-cost the row or run cost all.");
   }
 
   function updateRate(key: string, patch: Partial<RateItem>) {
+    const existing = imports.rates.find((rate) => rate.key === key);
+    const updated = existing ? { ...existing, ...patch, custom: true, source: "user" } : undefined;
     setImports((current) => ({
       ...current,
       rates: current.rates.map((rate) => (rate.key === key ? { ...rate, ...patch, custom: true, source: "user" } : rate))
     }));
+    if (updated) void patchRate(key, updated);
   }
 
   function addCustomRate() {
     const key = `custom_${Date.now()}`;
+    const rate = { key, label: "Custom material", rate: 0, unit: "NOS", category: "Custom", source: "user", custom: true };
     setImports((current) => ({
       ...current,
-      rates: [...current.rates, { key, label: "Custom material", rate: 0, unit: "NOS", category: "Custom", source: "user", custom: true }]
+      rates: [...current.rates, rate]
     }));
+    void saveRates([rate]);
   }
 
   function removeRate(key: string) {
     setImports((current) => ({ ...current, rates: current.rates.filter((rate) => rate.key !== key) }));
+    void deleteRate(key);
   }
 
   async function refreshProjects() {
@@ -209,6 +221,21 @@ export function CostingWorkspace() {
       setProjects(body.projects.map((project) => ({ ...project, snapshot: normalizeSnapshot(project.snapshot) })));
     } catch {
       // Browser archive remains available if the database is offline.
+    }
+  }
+
+  async function refreshLibraries() {
+    try {
+      const [ratesResponse, vendorsResponse] = await Promise.all([fetch("/api/rates"), fetch("/api/vendors")]);
+      const ratesBody = ratesResponse.ok ? ((await ratesResponse.json()) as { rates: RateItem[] }) : { rates: [] };
+      const vendorsBody = vendorsResponse.ok ? ((await vendorsResponse.json()) as { vendors: VendorLink[] }) : { vendors: [] };
+      setImports((current) => ({
+        ...current,
+        rates: current.rates.length ? current.rates : ratesBody.rates,
+        vendors: current.vendors.length ? current.vendors : vendorsBody.vendors
+      }));
+    } catch {
+      // Local snapshot data remains available if the database is offline.
     }
   }
 
@@ -266,6 +293,81 @@ export function CostingWorkspace() {
     } catch {
       setMessage("Project removed locally. Database delete is unavailable.");
     }
+  }
+
+  async function saveRates(rates: RateItem[]) {
+    try {
+      await fetch("/api/rates", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ rates })
+      });
+    } catch {
+      // Snapshot persistence remains the fallback.
+    }
+  }
+
+  async function patchRate(key: string, rate: RateItem) {
+    try {
+      await fetch(`/api/rates/${encodeURIComponent(key)}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(rate)
+      });
+    } catch {
+      // Snapshot persistence remains the fallback.
+    }
+  }
+
+  async function deleteRate(key: string) {
+    try {
+      await fetch(`/api/rates/${encodeURIComponent(key)}`, { method: "DELETE" });
+    } catch {
+      // Snapshot persistence remains the fallback.
+    }
+  }
+
+  async function saveVendors(vendors: VendorLink[]) {
+    try {
+      await fetch("/api/vendors", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ vendors })
+      });
+    } catch {
+      // Snapshot persistence remains the fallback.
+    }
+  }
+
+  async function saveTrainingSource(sourceFile: string, rowsRead: number, products: CorpusProduct[]) {
+    try {
+      await fetch("/api/training-sources", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ sourceFile, rowsRead, products })
+      });
+    } catch {
+      // Snapshot persistence remains the fallback.
+    }
+  }
+
+  async function logCorrections(previous: BoqItem, patch: Partial<BoqItem>) {
+    const projectId = stableProjectId(projectName, clientName);
+    await Promise.all(
+      Object.entries(patch).map(([field, newValue]) =>
+        fetch(`/api/boq-items/${encodeURIComponent(previous.id)}/corrections`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            projectId,
+            field,
+            oldValue: previous[field as keyof BoqItem] ?? null,
+            newValue: newValue ?? null,
+            reason: patch.reason || previous.reason
+          })
+        }).catch(() => undefined)
+      )
+    );
   }
 
   function exportSnapshot() {
