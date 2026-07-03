@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { authJsonError, requireRole, requireUser } from "../../../lib/auth";
 import { prisma } from "../../../lib/prisma";
 
 export const runtime = "nodejs";
@@ -47,55 +48,68 @@ const MATERIAL_KEYS = [
 ];
 
 export async function GET() {
-  const sources = await prisma.trainingSource.findMany({
-    include: { products: true },
-    orderBy: { importedAt: "desc" },
-    take: 25
-  });
+  try {
+    const user = await requireUser();
+    const sources = await prisma.trainingSource.findMany({
+      where: { organizationId: user.organizationId },
+      include: { products: true },
+      orderBy: { importedAt: "desc" },
+      take: 25
+    });
 
-  return NextResponse.json({
-    sources: sources.map((source) => ({
-      id: source.id,
-      filename: source.filename,
-      rowCount: source.rowCount,
-      importedAt: source.importedAt,
-      productCount: source.products.length
-    }))
-  });
+    return NextResponse.json({
+      sources: sources.map((source) => ({
+        id: source.id,
+        filename: source.filename,
+        rowCount: source.rowCount,
+        importedAt: source.importedAt,
+        productCount: source.products.length
+      }))
+    });
+  } catch (error) {
+    return authJsonError(error);
+  }
 }
 
 export async function POST(request: Request) {
-  const body = saveTrainingSchema.parse(await request.json());
-  const source = await prisma.trainingSource.create({
-    data: {
-      filename: body.sourceFile,
-      rowCount: body.rowsRead,
-      products: {
-        create: body.products.map((product) => ({
-          brand: product.brand ?? "",
-          itemNo: product.itemno,
-          productName: product.product,
-          size: product.size,
-          productType: product.ptype,
-          constructionType: product.ct,
-          lengthMm: product.L,
-          widthMm: product.W,
-          heightMm: product.H,
-          planAreaSqm: product.area,
-          totalInr: product._total,
-          materialQuantities: {
-            create: MATERIAL_KEYS.map((materialKey) => ({
-              materialKey,
-              quantity: Number(product[materialKey]) || 0,
-              unit: unitFor(materialKey)
-            })).filter((line) => line.quantity > 0)
-          }
-        }))
+  try {
+    const user = await requireUser();
+    requireRole(user, "MEMBER");
+    const body = saveTrainingSchema.parse(await request.json());
+    const source = await prisma.trainingSource.create({
+      data: {
+        organizationId: user.organizationId,
+        filename: body.sourceFile,
+        rowCount: body.rowsRead,
+        products: {
+          create: body.products.map((product) => ({
+            brand: product.brand ?? "",
+            itemNo: product.itemno,
+            productName: product.product,
+            size: product.size,
+            productType: product.ptype,
+            constructionType: product.ct,
+            lengthMm: product.L,
+            widthMm: product.W,
+            heightMm: product.H,
+            planAreaSqm: product.area,
+            totalInr: product._total,
+            materialQuantities: {
+              create: MATERIAL_KEYS.map((materialKey) => ({
+                materialKey,
+                quantity: Number(product[materialKey]) || 0,
+                unit: unitFor(materialKey)
+              })).filter((line) => line.quantity > 0)
+            }
+          }))
+        }
       }
-    }
-  });
+    });
 
-  return NextResponse.json({ ok: true, id: source.id, count: body.products.length });
+    return NextResponse.json({ ok: true, id: source.id, count: body.products.length });
+  } catch (error) {
+    return authJsonError(error);
+  }
 }
 
 function unitFor(materialKey: string): string {

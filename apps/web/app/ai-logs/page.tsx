@@ -1,4 +1,5 @@
 import { AppShell } from "../../components/app-shell";
+import { requireUser } from "../../lib/auth";
 import { prisma } from "../../lib/prisma";
 
 export const dynamic = "force-dynamic";
@@ -16,6 +17,7 @@ type AiLogRow = {
 };
 
 export default async function AiLogsPage() {
+  await requireUser();
   const logs = await loadAiLogs();
 
   return (

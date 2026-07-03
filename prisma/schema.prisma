@@ -14,6 +14,7 @@ model Organization {
   projects  Project[]
   rates     RateItem[]
   vendors   Vendor[]
+  trainingSources TrainingSource[]
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
@@ -24,7 +25,9 @@ model User {
   organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   email          String       @unique
   name           String?
+  passwordHash   String?
   role           UserRole     @default(MEMBER)
+  lastLoginAt    DateTime?
   createdAt      DateTime     @default(now())
   updatedAt      DateTime     @updatedAt
 }
@@ -88,6 +91,8 @@ model BoqItemCorrection {
 
 model TrainingSource {
   id          String          @id @default(cuid())
+  organizationId String?
+  organization   Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   filename    String
   rowCount    Int
   importedAt  DateTime        @default(now())

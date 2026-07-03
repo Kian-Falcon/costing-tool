@@ -4,6 +4,7 @@ import { BarChart3, Bot, Calculator, Database, Download, FileSpreadsheet, Librar
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
+import { useEffect, useState } from "react";
 
 const nav = [
   { label: "Dashboard", href: "/dashboard", icon: FileSpreadsheet },
@@ -18,6 +19,19 @@ const nav = [
 
 export function AppShell({ title, description, children }: { title: string; description: string; children: ReactNode }) {
   const pathname = usePathname();
+  const [user, setUser] = useState<{ email: string; role: string; organization?: { name: string } } | null>(null);
+
+  useEffect(() => {
+    void fetch("/api/auth/me", { cache: "no-store" })
+      .then((response) => response.json())
+      .then((body: { user: typeof user }) => setUser(body.user))
+      .catch(() => setUser(null));
+  }, []);
+
+  async function signOut() {
+    await fetch("/api/auth/logout", { method: "POST" });
+    window.location.href = "/login";
+  }
 
   return (
     <main className="min-h-screen bg-cloud">
@@ -27,9 +41,20 @@ export function AppShell({ title, description, children }: { title: string; desc
             <h1 className="text-xl font-semibold text-ink">{title}</h1>
             <p className="text-sm text-slate-600">{description}</p>
           </div>
-          <Link href="/dashboard" className="rounded-md bg-moss px-4 py-2 text-sm font-semibold text-white">
-            New BOQ
-          </Link>
+          <div className="flex items-center gap-3">
+            {user && (
+              <div className="hidden text-right text-xs text-slate-500 sm:block">
+                <div className="font-medium text-slate-700">{user.email}</div>
+                <div>{user.organization?.name ?? "Workspace"} | {user.role}</div>
+              </div>
+            )}
+            <Link href="/dashboard" className="rounded-md bg-moss px-4 py-2 text-sm font-semibold text-white">
+              New BOQ
+            </Link>
+            <button onClick={signOut} className="rounded-md border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700">
+              Sign out
+            </button>
+          </div>
         </div>
       </header>
       <div className="mx-auto grid max-w-7xl gap-6 px-6 py-6 lg:grid-cols-[220px_1fr]">

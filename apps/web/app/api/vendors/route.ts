@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { ensureDefaultOrganization } from "../../../lib/default-org";
+import { authJsonError, requireRole, requireUser } from "../../../lib/auth";
 import { prisma } from "../../../lib/prisma";
 
 export const runtime = "nodejs";
@@ -16,66 +16,75 @@ const saveVendorsSchema = z.object({
 });
 
 export async function GET() {
-  const organization = await ensureDefaultOrganization();
-  const vendors = await prisma.vendor.findMany({
-    where: { organizationId: organization.id },
-    include: { materials: { include: { rateItem: true } } },
-    orderBy: { name: "asc" }
-  });
+  try {
+    const user = await requireUser();
+    const vendors = await prisma.vendor.findMany({
+      where: { organizationId: user.organizationId },
+      include: { materials: { include: { rateItem: true } } },
+      orderBy: { name: "asc" }
+    });
 
-  return NextResponse.json({
-    vendors: vendors.flatMap((vendor) =>
-      vendor.materials.map((material) => ({
-        name: vendor.name,
-        materialName: material.materialName,
-        rateKey: material.rateItem?.key ?? ""
-      }))
-    )
-  });
+    return NextResponse.json({
+      vendors: vendors.flatMap((vendor) =>
+        vendor.materials.map((material) => ({
+          name: vendor.name,
+          materialName: material.materialName,
+          rateKey: material.rateItem?.key ?? ""
+        }))
+      )
+    });
+  } catch (error) {
+    return authJsonError(error);
+  }
 }
 
 export async function POST(request: Request) {
-  const body = saveVendorsSchema.parse(await request.json());
-  const organization = await ensureDefaultOrganization();
+  try {
+    const user = await requireUser();
+    requireRole(user, "MEMBER");
+    const body = saveVendorsSchema.parse(await request.json());
 
-  for (const link of body.vendors) {
-    const vendor = await prisma.vendor.upsert({
-      where: { id: vendorId(organization.id, link.name) },
-      create: {
-        id: vendorId(organization.id, link.name),
-        organizationId: organization.id,
-        name: link.name
-      },
-      update: {
-        name: link.name
-      }
-    });
-
-    const rate = await prisma.rateItem.findUnique({
-      where: {
-        organizationId_key: {
-          organizationId: organization.id,
-          key: link.rateKey
+    for (const link of body.vendors) {
+      const vendor = await prisma.vendor.upsert({
+        where: { id: vendorId(user.organizationId, link.name) },
+        create: {
+          id: vendorId(user.organizationId, link.name),
+          organizationId: user.organizationId,
+          name: link.name
+        },
+        update: {
+          name: link.name
         }
-      }
-    });
+      });
 
-    await prisma.vendorMaterial.upsert({
-      where: { id: vendorMaterialId(vendor.id, link.materialName, link.rateKey) },
-      create: {
-        id: vendorMaterialId(vendor.id, link.materialName, link.rateKey),
-        vendorId: vendor.id,
-        rateItemId: rate?.id,
-        materialName: link.materialName
-      },
-      update: {
-        rateItemId: rate?.id,
-        materialName: link.materialName
-      }
-    });
+      const rate = await prisma.rateItem.findUnique({
+        where: {
+          organizationId_key: {
+            organizationId: user.organizationId,
+            key: link.rateKey
+          }
+        }
+      });
+
+      await prisma.vendorMaterial.upsert({
+        where: { id: vendorMaterialId(vendor.id, link.materialName, link.rateKey) },
+        create: {
+          id: vendorMaterialId(vendor.id, link.materialName, link.rateKey),
+          vendorId: vendor.id,
+          rateItemId: rate?.id,
+          materialName: link.materialName
+        },
+        update: {
+          rateItemId: rate?.id,
+          materialName: link.materialName
+        }
+      });
+    }
+
+    return NextResponse.json({ ok: true, count: body.vendors.length });
+  } catch (error) {
+    return authJsonError(error);
   }
-
-  return NextResponse.json({ ok: true, count: body.vendors.length });
 }
 
 function vendorId(organizationId: string, name: string): string {

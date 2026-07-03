@@ -1,5 +1,6 @@
 import { type Prisma } from "@prisma/client";
 import { NextResponse } from "next/server";
+import { authJsonError, requireRole, requireUser } from "../../../../lib/auth";
 import { prisma } from "../../../../lib/prisma";
 
 export const runtime = "nodejs";
@@ -11,24 +12,31 @@ type RouteContext = {
 };
 
 export async function GET(_request: Request, context: RouteContext) {
-  const project = await prisma.project.findUnique({
-    where: { id: context.params.id }
-  });
+  try {
+    const user = await requireUser();
+    const project = await prisma.project.findFirst({
+      where: { id: context.params.id, organizationId: user.organizationId }
+    });
 
-  if (!project) {
-    return NextResponse.json({ error: "Project not found." }, { status: 404 });
+    if (!project) {
+      return NextResponse.json({ error: "Project not found." }, { status: 404 });
+    }
+
+    return NextResponse.json({ project: toProjectArchive(project) });
+  } catch (error) {
+    return authJsonError(error);
   }
-
-  return NextResponse.json({ project: toProjectArchive(project) });
 }
 
 export async function DELETE(_request: Request, context: RouteContext) {
   try {
-    await prisma.project.delete({
-      where: { id: context.params.id }
+    const user = await requireUser();
+    requireRole(user, "MEMBER");
+    await prisma.project.deleteMany({
+      where: { id: context.params.id, organizationId: user.organizationId }
     });
-  } catch {
-    return NextResponse.json({ ok: true });
+  } catch (error) {
+    return authJsonError(error);
   }
 
   return NextResponse.json({ ok: true });

@@ -1,7 +1,8 @@
 import { type Prisma } from "@prisma/client";
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { dbBoqId, dbBoqItemId, ensureDefaultOrganization } from "../../../lib/default-org";
+import { authJsonError, requireRole, requireUser } from "../../../lib/auth";
+import { dbBoqId, dbBoqItemId } from "../../../lib/default-org";
 import { prisma } from "../../../lib/prisma";
 
 export const runtime = "nodejs";
@@ -24,21 +25,29 @@ const saveProjectSchema = z.object({
 });
 
 export async function GET() {
-  const projects = await prisma.project.findMany({
-    orderBy: { updatedAt: "desc" },
-    take: 100
-  });
+  try {
+    const user = await requireUser();
+    const projects = await prisma.project.findMany({
+      where: { organizationId: user.organizationId },
+      orderBy: { updatedAt: "desc" },
+      take: 100
+    });
 
-  return NextResponse.json({ projects: projects.map(toProjectArchive) });
+    return NextResponse.json({ projects: projects.map(toProjectArchive) });
+  } catch (error) {
+    return authJsonError(error);
+  }
 }
 
 export async function POST(request: Request) {
-  const body = saveProjectSchema.parse(await request.json());
-  const organization = await ensureDefaultOrganization();
-  const savedAt = body.snapshot.savedAt ?? new Date().toISOString();
-  const snapshot = { ...body.snapshot, savedAt };
-  const boqId = dbBoqId(snapshot.id);
-  const items = snapshot.items.map((item) => ({
+  try {
+    const user = await requireUser();
+    requireRole(user, "MEMBER");
+    const body = saveProjectSchema.parse(await request.json());
+    const savedAt = body.snapshot.savedAt ?? new Date().toISOString();
+    const snapshot = { ...body.snapshot, savedAt };
+    const boqId = dbBoqId(snapshot.id);
+    const items = snapshot.items.map((item) => ({
     id: String(item.id ?? ""),
     code: optionalString(item.code),
     name: String(item.name ?? "Untitled item"),
@@ -53,12 +62,12 @@ export async function POST(request: Request) {
     manualFactory: optionalNumber(item.manualFac)
   })).filter((item) => item.id);
 
-  const project = await prisma.$transaction(async (tx) => {
+    const project = await prisma.$transaction(async (tx) => {
     const savedProject = await tx.project.upsert({
       where: { id: snapshot.id },
       create: {
         id: snapshot.id,
-        organizationId: organization.id,
+        organizationId: user.organizationId,
         name: snapshot.projectName,
         clientName: snapshot.clientName || null,
         snapshot: snapshot as Prisma.InputJsonValue,
@@ -131,7 +140,10 @@ export async function POST(request: Request) {
     return savedProject;
   });
 
-  return NextResponse.json({ project: toProjectArchive(project) });
+    return NextResponse.json({ project: toProjectArchive(project) });
+  } catch (error) {
+    return authJsonError(error);
+  }
 }
 
 function toProjectArchive(project: {
