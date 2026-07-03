@@ -4,6 +4,8 @@ import {
   buildPiRows,
   type CostedBoqRow
 } from "@kf/importers";
+import { existsSync } from "fs";
+import path from "path";
 import PDFDocument from "pdfkit";
 
 type PdfVariant = "quotation" | "internal" | "pi";
@@ -45,16 +47,19 @@ async function buildPdf(title: string, subtitle: string, rows: Record<string, un
 }
 
 function renderHeader(document: PDFKit.PDFDocument, title: string, subtitle: string, variant: PdfVariant) {
-  const meta = documentMeta(variant);
-  document.rect(36, 32, 523, 72).fill("#f8fafc");
-  document.fillColor("#1f2937").font("Helvetica-Bold").fontSize(16).text(process.env.COMPANY_NAME || "Kian Falcon", 50, 46);
-  document.fillColor("#64748b").font("Helvetica").fontSize(8).text(process.env.COMPANY_ADDRESS || "Furniture costing and manufacturing workspace", 50, 67, { width: 260 });
-  document.fillColor("#0f172a").font("Helvetica-Bold").fontSize(15).text(title, 360, 46, { align: "right", width: 180 });
-  document.fillColor("#64748b").font("Helvetica").fontSize(8).text(`Date: ${new Date().toLocaleDateString("en-IN")}`, 360, 69, { align: "right", width: 180 });
-  document.fillColor("#64748b").font("Helvetica").fontSize(8).text(meta, 360, 82, { align: "right", width: 180 });
-  document.y = 120;
-  document.fillColor("#475569").font("Helvetica").fontSize(9).text(subtitle);
-  document.moveDown(0.7);
+  const docNo = documentNumber(variant);
+  renderLogo(document);
+  document.fillColor("#111827").font("Helvetica-Bold").fontSize(11).text("Furniture Manufacturing", 42, 82, { width: 220 });
+  document.fillColor("#111827").font("Helvetica-Bold").fontSize(18).text(documentTitle(title, variant).toUpperCase(), 350, 40, { width: 190, align: "right" });
+  document.fillColor("#b91c1c").font("Helvetica-Bold").fontSize(12).text(docNo, 350, 64, { width: 190, align: "right" });
+  document.fillColor("#111827").font("Helvetica").fontSize(8.5).text(`${documentNoLabel(variant)}: ${docNo}   Date: ${new Date().toLocaleDateString("en-IN")}`, 42, 112, { width: 500 });
+  document.text(`Project: ${process.env.EXPORT_PROJECT_LABEL || "Uploaded BOQ"}`, 42, 127, { width: 500 });
+  if (variant === "internal") {
+    document.fillColor("#b91c1c").font("Helvetica-Bold").fontSize(8).text(subtitle, 42, 142, { width: 500 });
+    document.y = 160;
+  } else {
+    document.y = 150;
+  }
   renderTableHeader(document, variant);
 }
 
@@ -66,18 +71,15 @@ function renderRow(document: PDFKit.PDFDocument, row: Record<string, unknown>, i
   const unitPrice = currency(pick(row, "Unit Price (INR)", "Selling Price (INR)"));
 
   const startY = document.y;
-  document.fillColor("#475569").font("Helvetica").fontSize(8).text(String(index + 1), 42, startY, { width: 24 });
-  document.fillColor("#0f172a").font("Helvetica-Bold").fontSize(8.5).text(String(name || "Item"), 70, startY, { width: 230 });
-  document.fillColor("#475569").font("Helvetica").fontSize(8).text(String(qty || "-"), 322, startY, { width: 38, align: "right" });
-  document.text(unitPrice, 372, startY, { width: 72, align: "right" });
-  document.fillColor("#0f172a").font("Helvetica-Bold").text(total, 462, startY, { width: 82, align: "right" });
+  document.fillColor("#111827").font("Helvetica").fontSize(7.5).text(String(index + 1), 42, startY, { width: 22 });
+  document.text(String(code || "-"), 66, startY, { width: 58 });
+  document.fillColor("#111827").font("Helvetica-Bold").fontSize(7.7).text(String(name || "Item"), 128, startY, { width: 118 });
+  document.fillColor("#111827").font("Helvetica").fontSize(7.2).text(String(pick(row, "Dimensions") || "-"), 250, startY, { width: 78 });
+  document.text(String(pick(row, "Specification") || "-"), 332, startY, { width: 72 });
+  document.text(String(qty || "-"), 406, startY, { width: 28, align: "right" });
+  document.text(moneyOnly(unitPrice), 438, startY, { width: 52, align: "right" });
+  document.fillColor("#111827").font("Helvetica-Bold").text(moneyOnly(total), 494, startY, { width: 54, align: "right" });
   document.y = startY + 15;
-
-  const dimensions = pick(row, "Dimensions");
-  const specification = pick(row, "Specification");
-  if (dimensions || specification) {
-    document.fillColor("#64748b").font("Helvetica").fontSize(7.5).text([code && `Code: ${code}`, dimensions && `Dimensions: ${dimensions}`, specification && `Spec: ${specification}`].filter(Boolean).join("   "), 70, document.y, { width: 470 });
-  }
 
   if (variant === "internal") {
     document.fillColor("#475569").fontSize(8).text(
@@ -88,60 +90,72 @@ function renderRow(document: PDFKit.PDFDocument, row: Record<string, unknown>, i
   }
 
   document.moveDown(0.35);
-  document.strokeColor("#e5e7eb").moveTo(36, document.y).lineTo(559, document.y).stroke();
+  document.strokeColor("#e5e7eb").moveTo(42, document.y).lineTo(550, document.y).stroke();
   document.moveDown(0.35);
 }
 
 function renderTableHeader(document: PDFKit.PDFDocument, variant: PdfVariant) {
   const y = document.y;
-  document.rect(36, y, 523, 22).fill("#e8f0ed");
-  document.fillColor("#264c42").font("Helvetica-Bold").fontSize(8);
-  document.text("#", 42, y + 7, { width: 24 });
-  document.text(variant === "internal" ? "Item / Cost Basis" : "Item Description", 70, y + 7, { width: 230 });
-  document.text("Qty", 322, y + 7, { width: 38, align: "right" });
-  document.text("Rate", 372, y + 7, { width: 72, align: "right" });
-  document.text("Amount", 462, y + 7, { width: 82, align: "right" });
+  document.rect(42, y, 508, 22).fill("#111827");
+  document.fillColor("#ffffff").font("Helvetica-Bold").fontSize(7);
+  document.text("Sr.", 46, y + 7, { width: 18 });
+  document.text("Code", 66, y + 7, { width: 58 });
+  document.text("Product", 128, y + 7, { width: 118 });
+  document.text("Dimensions", 250, y + 7, { width: 78 });
+  document.text("Specification", 332, y + 7, { width: 72 });
+  document.text("Qty", 406, y + 7, { width: 28, align: "right" });
+  document.text(variant === "internal" ? "Factory" : "Unit (Rs.)", 438, y + 7, { width: 52, align: "right" });
+  document.text("Total (Rs.)", 494, y + 7, { width: 54, align: "right" });
   document.y = y + 30;
 }
 
 function renderTotals(document: PDFKit.PDFDocument, rows: Record<string, unknown>[], variant: PdfVariant) {
-  if (document.y > 650) document.addPage();
+  if (document.y > 620) document.addPage();
   const subtotal = rows.reduce((sum, row) => sum + Number(pick(row, "Line Total (INR)", "Amount (INR)") || 0), 0);
-  const gstRate = variant === "internal" ? 0 : Number(process.env.EXPORT_GST_PERCENT ?? 0);
+  const gstRate = variant === "internal" ? 0 : Number(process.env.EXPORT_GST_PERCENT ?? 18);
   const gst = subtotal * (Number.isFinite(gstRate) ? gstRate : 0) / 100;
   const grandTotal = subtotal + gst;
   document.moveDown(0.8);
-  document.rect(350, document.y, 195, gstRate ? 70 : 48).fill("#f8fafc");
-  const y = document.y + 10;
-  document.fillColor("#475569").font("Helvetica").fontSize(9).text("Subtotal", 365, y, { width: 75 });
-  document.text(currency(subtotal), 455, y, { width: 75, align: "right" });
+  const y = document.y;
+  document.strokeColor("#111827").moveTo(350, y).lineTo(550, y).stroke();
+  document.fillColor("#111827").font("Helvetica").fontSize(9).text("Subtotal", 370, y + 10, { width: 80 });
+  document.text(moneyOnly(currency(subtotal)), 455, y + 10, { width: 80, align: "right" });
   if (gstRate) {
-    document.text(`GST ${gstRate}%`, 365, y + 18, { width: 75 });
-    document.text(currency(gst), 455, y + 18, { width: 75, align: "right" });
+    document.text(`CGST @ ${gstRate / 2}%`, 370, y + 28, { width: 80 });
+    document.text(moneyOnly(currency(gst / 2)), 455, y + 28, { width: 80, align: "right" });
+    document.text(`SGST @ ${gstRate / 2}%`, 370, y + 46, { width: 80 });
+    document.text(moneyOnly(currency(gst / 2)), 455, y + 46, { width: 80, align: "right" });
   }
-  document.fillColor("#0f172a").font("Helvetica-Bold").fontSize(10).text("Total", 365, y + (gstRate ? 40 : 22), { width: 75 });
-  document.text(currency(grandTotal), 455, y + (gstRate ? 40 : 22), { width: 75, align: "right" });
-  document.y += gstRate ? 82 : 60;
+  document.fillColor("#111827").font("Helvetica-Bold").fontSize(10).text("Grand Total (Rs.)", 370, y + (gstRate ? 70 : 34), { width: 90 });
+  document.text(moneyOnly(currency(grandTotal)), 455, y + (gstRate ? 70 : 34), { width: 80, align: "right" });
+  document.y = y + (gstRate ? 96 : 58);
+  if (variant !== "internal") {
+    document.fillColor("#111827").font("Helvetica-Bold").fontSize(8.5).text(`Amount in words: INR ${toIndianWords(Math.round(grandTotal))} Only`, 42, document.y, { width: 500 });
+    document.moveDown(1);
+  }
 }
 
 function renderTerms(document: PDFKit.PDFDocument, variant: PdfVariant) {
   if (variant === "internal") return;
   if (document.y > 700) document.addPage();
-  document.fillColor("#0f172a").font("Helvetica-Bold").fontSize(9).text("Terms");
-  document.fillColor("#64748b").font("Helvetica").fontSize(8).text(
-    process.env.EXPORT_TERMS || "Prices are indicative until final drawing, finish, and quantity approval. Taxes, freight, installation, and delivery timelines are as agreed in the final purchase order.",
-    { width: 500 }
-  );
-  document.moveDown(1);
-  document.fillColor("#0f172a").font("Helvetica-Bold").fontSize(9).text("Authorized Signatory", 390, document.y + 20, { width: 150, align: "center" });
-  document.strokeColor("#94a3b8").moveTo(390, document.y + 14).lineTo(540, document.y + 14).stroke();
+  const terms = (process.env.EXPORT_TERMS || DEFAULT_TERMS).split("|");
+  document.fillColor("#111827").font("Helvetica-Bold").fontSize(9).text("Terms & Conditions", 42, document.y);
+  document.moveDown(0.4);
+  document.fillColor("#111827").font("Helvetica").fontSize(7.8);
+  terms.forEach((term, index) => {
+    document.text(`${index + 1}. ${term.trim()}`, 42, document.y, { width: 500 });
+  });
+  document.moveDown(1.4);
+  document.fillColor("#111827").font("Helvetica").fontSize(8.5).text("For Kian Falcon", 390, document.y, { width: 150, align: "center" });
+  document.moveDown(2.3);
+  document.fillColor("#111827").font("Helvetica-Bold").fontSize(8.5).text("Authorised Signatory", 390, document.y, { width: 150, align: "center" });
 }
 
 function renderFooter(document: PDFKit.PDFDocument) {
   const range = document.bufferedPageRange();
   for (let pageIndex = range.start; pageIndex < range.start + range.count; pageIndex += 1) {
     document.switchToPage(pageIndex);
-    document.fillColor("#94a3b8").font("Helvetica").fontSize(7).text(`Generated by Kian Falcon Costing Tool | Page ${pageIndex + 1}`, 36, 810, { align: "center", width: 523 });
+    document.fillColor("#6b7280").font("Helvetica").fontSize(7).text(`Kian Falcon | Page ${pageIndex + 1}`, 36, 810, { align: "center", width: 523 });
   }
 }
 
@@ -155,7 +169,7 @@ function pick(row: Record<string, unknown>, ...keys: string[]): unknown {
 function currency(value: unknown): string {
   const amount = Number(value);
   if (!Number.isFinite(amount)) return "-";
-  return `INR ${amount.toLocaleString("en-IN", { maximumFractionDigits: 2 })}`;
+  return `INR ${amount.toLocaleString("en-IN", { maximumFractionDigits: 0 })}`;
 }
 
 function documentMeta(variant: PdfVariant): string {
@@ -163,3 +177,76 @@ function documentMeta(variant: PdfVariant): string {
   if (variant === "internal") return "Internal use only";
   return "Quotation";
 }
+
+function documentTitle(title: string, variant: PdfVariant): string {
+  if (variant === "pi") return "Proforma Invoice";
+  return title;
+}
+
+function documentNoLabel(variant: PdfVariant): string {
+  if (variant === "pi") return "PI No";
+  if (variant === "internal") return "Costing No";
+  return "Quote No";
+}
+
+function documentNumber(variant: PdfVariant): string {
+  const year = new Date().getFullYear();
+  const suffix = process.env.EXPORT_DOCUMENT_NUMBER || `${new Date().getTime().toString().slice(-4)}`;
+  if (variant === "pi") return `PI-KF-${year}-${suffix}`;
+  if (variant === "internal") return `IC-KF-${year}-${suffix}`;
+  return `QT-KF-${year}-${suffix}`;
+}
+
+function moneyOnly(value: string): string {
+  return value.replace(/^INR\s*/, "");
+}
+
+function renderLogo(document: PDFKit.PDFDocument) {
+  const logoPath = findLogoPath();
+  if (logoPath) {
+    document.image(logoPath, 42, 34, { width: 185 });
+    return;
+  }
+  document.fillColor("#111827").font("Helvetica-Bold").fontSize(26).text("Kian", 42, 36, { continued: true });
+  document.fillColor("#b91c1c").text(" Falcon");
+}
+
+function findLogoPath(): string | undefined {
+  const candidates = [
+    path.join(process.cwd(), "public", "kian-falcon-logo.png"),
+    path.join(process.cwd(), "apps", "web", "public", "kian-falcon-logo.png")
+  ];
+  return candidates.find((candidate) => existsSync(candidate));
+}
+
+function toIndianWords(value: number): string {
+  if (!value) return "Zero";
+  const crore = Math.floor(value / 10000000);
+  const lakh = Math.floor((value % 10000000) / 100000);
+  const thousand = Math.floor((value % 100000) / 1000);
+  const hundred = Math.floor((value % 1000) / 100);
+  const rest = value % 100;
+  return [
+    crore ? `${smallWords(crore)} Crore` : "",
+    lakh ? `${smallWords(lakh)} Lakh` : "",
+    thousand ? `${smallWords(thousand)} Thousand` : "",
+    hundred ? `${smallWords(hundred)} Hundred` : "",
+    rest ? smallWords(rest) : ""
+  ].filter(Boolean).join(" ");
+}
+
+function smallWords(value: number): string {
+  const ones = ["", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten", "Eleven", "Twelve", "Thirteen", "Fourteen", "Fifteen", "Sixteen", "Seventeen", "Eighteen", "Nineteen"];
+  const tens = ["", "", "Twenty", "Thirty", "Forty", "Fifty", "Sixty", "Seventy", "Eighty", "Ninety"];
+  if (value < 20) return ones[value];
+  return `${tens[Math.floor(value / 10)]}${value % 10 ? ` ${ones[value % 10]}` : ""}`;
+}
+
+const DEFAULT_TERMS = [
+  "50% advance with PO, balance before dispatch.",
+  "Lead time: 4-6 weeks from PO + advance receipt.",
+  "Delivery: Ex-factory unless otherwise agreed; freight extra.",
+  "GST as charged above; rates valid for 30 days from PI date.",
+  "Site measurements to be confirmed before production begins.",
+  "Any change in scope, material grade, or finish will be re-quoted."
+].join("|");
