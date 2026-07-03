@@ -155,6 +155,23 @@ export function CostingWorkspace() {
     setBusy(null);
   }
 
+  async function uploadBoqPdf(file: File) {
+    setBusy("pdf");
+    try {
+      const result = await postFile<{ items?: BoqItem[]; fallbackItems?: BoqItem[]; warning?: string; error?: string }>("/api/ai/extract-boq-pdf", file);
+      const extracted = result.items ?? result.fallbackItems ?? [];
+      setItems(extracted);
+      setSelectedItemId(extracted[0]?.id ?? null);
+      setCosted([]);
+      setProjectName(file.name.replace(/\.[^.]+$/, ""));
+      setMessage(result.warning ?? `Extracted ${extracted.length} BOQ rows from ${file.name}.`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not extract BOQ PDF.");
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function costAll() {
     setBusy("cost");
     const result = await costItems(items);
@@ -169,6 +186,25 @@ export function CostingWorkspace() {
     setCosted((current) => [...current.filter((row) => row.item.id !== item.id), result.items[0]]);
     setMessage(`Recosted ${item.name}.`);
     setBusy(null);
+  }
+
+  async function aiCostItem(item: BoqItem, provider: "openai" | "anthropic") {
+    setBusy(`ai:${provider}:${item.id}`);
+    try {
+      const response = await fetch("/api/ai/cost-item", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ item, rates: imports.rates, corpus: imports.corpus, models, ratioNorms, provider })
+      });
+      const body = (await response.json()) as { result?: CostResult; error?: string; seedResult?: CostResult };
+      if (!response.ok || !body.result) throw new Error(body.error ?? "AI costing failed.");
+      setCosted((current) => [...current.filter((row) => row.item.id !== item.id), { item, result: body.result! }]);
+      setMessage(`AI costed ${item.name} with ${provider}.`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "AI costing failed.");
+    } finally {
+      setBusy(null);
+    }
   }
 
   async function costItems(inputItems: BoqItem[]) {
@@ -465,6 +501,7 @@ export function CostingWorkspace() {
 
         <Panel title="BOQ Workflow" icon={<FileUp size={18} />}>
           <UploadButton label="Upload BOQ" busy={busy === "boq"} accept=".csv,.xlsx,.xls" onFile={uploadBoq} />
+          <UploadButton label="Extract BOQ PDF" busy={busy === "pdf"} accept=".pdf" onFile={uploadBoqPdf} />
           <button
             type="button"
             disabled={!items.length || busy === "cost"}
@@ -554,8 +591,10 @@ export function CostingWorkspace() {
             item={selectedItem}
             costed={costed.find((row) => row.item.id === selectedItem?.id)}
             busy={selectedItem ? busy === `cost:${selectedItem.id}` : false}
+            aiBusy={selectedItem ? busy === `ai:openai:${selectedItem.id}` || busy === `ai:anthropic:${selectedItem.id}` : false}
             onUpdate={updateItem}
             onRecost={recostItem}
+            onAiCost={aiCostItem}
           />
         )}
       </div>
@@ -634,14 +673,18 @@ function RowEditor({
   item,
   costed,
   busy,
+  aiBusy,
   onUpdate,
-  onRecost
+  onRecost,
+  onAiCost
 }: {
   item?: BoqItem;
   costed?: CostedRow;
   busy: boolean;
+  aiBusy: boolean;
   onUpdate: (itemId: string, patch: Partial<BoqItem>) => void;
   onRecost: (item: BoqItem) => void;
+  onAiCost: (item: BoqItem, provider: "openai" | "anthropic") => void;
 }) {
   if (!item) return <EmptyState title="No BOQ row selected" text="Upload a BOQ, then select a row to edit costing inputs." />;
   const update = (patch: Partial<BoqItem>) => onUpdate(item.id, patch);
@@ -674,6 +717,14 @@ function RowEditor({
           {busy ? <Loader2 className="animate-spin" size={16} /> : <Calculator size={16} />}
           Re-cost row
         </button>
+        <div className="mt-3 grid gap-2 sm:grid-cols-2">
+          <button disabled={aiBusy} onClick={() => onAiCost(item, "openai")} className="rounded-md border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 disabled:text-slate-300">
+            OpenAI cost
+          </button>
+          <button disabled={aiBusy} onClick={() => onAiCost(item, "anthropic")} className="rounded-md border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 disabled:text-slate-300">
+            Claude cost
+          </button>
+        </div>
       </Panel>
 
       <Panel title="Material Breakdown" icon={<Library size={18} />}>

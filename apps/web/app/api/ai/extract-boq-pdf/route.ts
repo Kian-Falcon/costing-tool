@@ -1,12 +1,127 @@
+import { parseBoqRows } from "@kf/importers";
+import { createHash } from "node:crypto";
+import { PDFParse } from "pdf-parse";
 import { NextResponse } from "next/server";
+import { callAiText, extractJsonArray, type AiProvider } from "../../../../lib/ai-providers";
 import { env } from "../../../../lib/env";
+import { prisma } from "../../../../lib/prisma";
 
 export const runtime = "nodejs";
 
-export async function POST() {
-  if (!env.ANTHROPIC_API_KEY && !env.OPENAI_API_KEY) {
-    return NextResponse.json({ error: "Configure a server-side AI provider key before PDF extraction." }, { status: 503 });
+export async function POST(request: Request) {
+  const form = await request.formData();
+  const file = form.get("file");
+  if (!(file instanceof File)) return NextResponse.json({ error: "Expected a PDF file field." }, { status: 400 });
+
+  const provider = chooseProvider(String(form.get("provider") ?? ""));
+  const buffer = Buffer.from(await file.arrayBuffer());
+  const parser = new PDFParse({ data: buffer });
+  const parsed = await parser.getText();
+  await parser.destroy();
+  const text = (parsed.text ?? "").trim();
+  const uploadedFile = await prisma.uploadedFile.create({
+    data: {
+      filename: file.name,
+      mimeType: file.type || "application/pdf",
+      sizeBytes: buffer.byteLength,
+      storageKey: `memory:${sha256(buffer)}`
+    }
+  });
+
+  await prisma.pdfPage.create({
+    data: {
+      fileId: uploadedFile.id,
+      pageNo: 1,
+      text
+    }
+  });
+
+  if (!text) {
+    return NextResponse.json({ error: "No text could be extracted from the PDF.", fileId: uploadedFile.id }, { status: 422 });
   }
 
-  return NextResponse.json({ jobId: "pending-provider-integration", status: "queued" }, { status: 202 });
+  if (!provider) {
+    const fallbackRows = heuristicRows(text);
+    return NextResponse.json({
+      fileId: uploadedFile.id,
+      status: "extracted_without_ai",
+      warning: "Configure OPENAI_API_KEY or ANTHROPIC_API_KEY for structured PDF BOQ extraction.",
+      textPreview: text.slice(0, 4000),
+      items: parseBoqRows(fallbackRows)
+    });
+  }
+
+  const prompt = buildPdfExtractionPrompt(text);
+  try {
+    const ai = await callAiText({ provider, prompt, promptVersion: "boq-pdf-extract-v1" });
+    const rows = extractJsonArray(ai.text).map((row) => row as Record<string, unknown>);
+    return NextResponse.json({
+      fileId: uploadedFile.id,
+      provider,
+      modelId: ai.modelId,
+      aiRequestId: ai.requestId,
+      rows,
+      items: parseBoqRows(rows),
+      textPreview: text.slice(0, 2000)
+    });
+  } catch (error) {
+    const fallbackRows = heuristicRows(text);
+    return NextResponse.json(
+      {
+        fileId: uploadedFile.id,
+        error: error instanceof Error ? error.message : "AI PDF extraction failed.",
+        textPreview: text.slice(0, 4000),
+        fallbackItems: parseBoqRows(fallbackRows)
+      },
+      { status: 502 }
+    );
+  }
+}
+
+function chooseProvider(value: string): AiProvider | undefined {
+  if (value === "openai" && env.OPENAI_API_KEY) return "openai";
+  if (value === "anthropic" && env.ANTHROPIC_API_KEY) return "anthropic";
+  if (env.OPENAI_API_KEY) return "openai";
+  if (env.ANTHROPIC_API_KEY) return "anthropic";
+  return undefined;
+}
+
+function buildPdfExtractionPrompt(text: string): string {
+  return `You are extracting a furniture BOQ from PDF text.
+Return ONLY a JSON array. Each row must use these keys:
+{"Code":"","Product Name":"","Dimensions":"","Specification":"","Qty":1}
+
+Rules:
+- Keep product names concise and manufacturing-facing.
+- Put all material/finish notes in Specification.
+- Preserve dimensions as written when possible.
+- If quantity is missing, use 1.
+- Ignore headers, footers, terms, totals, taxes, and page numbers.
+
+PDF TEXT
+================================================================================
+${text.slice(0, 30000)}`;
+}
+
+function heuristicRows(text: string): Record<string, unknown>[] {
+  return text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 10)
+    .slice(0, 80)
+    .map((line, index) => {
+      const qtyMatch = line.match(/\bqty[:\s]+(\d+(?:\.\d+)?)/i) ?? line.match(/\s(\d+(?:\.\d+)?)\s*(?:nos|pcs|qty)\b/i);
+      const dimsMatch = line.match(/\b\d{2,5}\s*[xX*]\s*\d{2,5}(?:\s*[xX*]\s*\d{2,5})?\b/);
+      return {
+        Code: String(index + 1),
+        "Product Name": line.slice(0, 120),
+        Dimensions: dimsMatch?.[0] ?? "",
+        Specification: line,
+        Qty: qtyMatch ? Number(qtyMatch[1]) : 1
+      };
+    });
+}
+
+function sha256(buffer: Buffer): string {
+  return createHash("sha256").update(buffer).digest("hex");
 }
