@@ -10,7 +10,7 @@
   "scripts": {
     "dev": "npm run dev --workspace @kf/web",
     "build": "npm run build --workspaces --if-present",
-    "build:web": "npm run build --workspace @kf/web",
+    "build:web": "prisma generate && npm run build --workspace @kf/web",
     "start:web": "npm run start --workspace @kf/web",
     "lint": "npm run lint --workspaces --if-present",
     "test": "vitest run",
