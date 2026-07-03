@@ -5,8 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
-    "build:web": "next build",
+    "build": "prisma generate --schema ../../prisma/schema.prisma && next build",
+    "build:web": "prisma generate --schema ../../prisma/schema.prisma && next build",
     "start": "next start",
     "lint": "next lint",
     "typecheck": "tsc -p tsconfig.json --noEmit"
