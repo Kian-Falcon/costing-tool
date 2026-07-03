@@ -95,6 +95,8 @@ export function CostingWorkspace() {
       }
     }
 
+    void refreshProjects();
+
     if (!saved) return;
     try {
       restoreSnapshot(normalizeSnapshot(JSON.parse(saved)));
@@ -199,7 +201,18 @@ export function CostingWorkspace() {
     setImports((current) => ({ ...current, rates: current.rates.filter((rate) => rate.key !== key) }));
   }
 
-  function saveProject() {
+  async function refreshProjects() {
+    try {
+      const response = await fetch("/api/projects");
+      if (!response.ok) return;
+      const body = (await response.json()) as { projects: ProjectArchive[] };
+      setProjects(body.projects.map((project) => ({ ...project, snapshot: normalizeSnapshot(project.snapshot) })));
+    } catch {
+      // Browser archive remains available if the database is offline.
+    }
+  }
+
+  async function saveProject() {
     const snapshot = buildSnapshot({ projectName, clientName, imports, items, costed, message });
     const archive: ProjectArchive = {
       id: snapshot.id,
@@ -210,20 +223,49 @@ export function CostingWorkspace() {
       total: totals.sell,
       snapshot
     };
-    setProjects((current) => [archive, ...current.filter((project) => project.id !== archive.id)].slice(0, 25));
     window.localStorage.setItem(SNAPSHOT_KEY, JSON.stringify(snapshot));
     setLastSaved(snapshot.savedAt);
-    setMessage(`Saved ${projectName} to project archive.`);
+    setProjects((current) => [archive, ...current.filter((project) => project.id !== archive.id)].slice(0, 25));
+
+    try {
+      const response = await fetch("/api/projects", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ snapshot, itemCount: items.length, total: totals.sell })
+      });
+      if (!response.ok) throw new Error(await response.text());
+      const body = (await response.json()) as { project: ProjectArchive };
+      const savedProject = { ...body.project, snapshot: normalizeSnapshot(body.project.snapshot) };
+      setProjects((current) => [savedProject, ...current.filter((project) => project.id !== savedProject.id)].slice(0, 25));
+      setMessage(`Saved ${projectName} to Supabase project archive.`);
+    } catch {
+      setMessage(`Saved ${projectName} locally. Database save is unavailable.`);
+    }
   }
 
-  function loadProject(project: ProjectArchive) {
-    restoreSnapshot(project.snapshot);
-    setActiveView("workspace");
-    setMessage(`Loaded archived project ${project.name}.`);
+  async function loadProject(project: ProjectArchive) {
+    try {
+      const response = await fetch(`/api/projects/${encodeURIComponent(project.id)}`);
+      if (!response.ok) throw new Error(await response.text());
+      const body = (await response.json()) as { project: ProjectArchive };
+      restoreSnapshot(normalizeSnapshot(body.project.snapshot));
+      setActiveView("workspace");
+      setMessage(`Loaded ${body.project.name} from Supabase.`);
+    } catch {
+      restoreSnapshot(normalizeSnapshot(project.snapshot));
+      setActiveView("workspace");
+      setMessage(`Loaded archived project ${project.name} from local cache.`);
+    }
   }
 
-  function deleteProject(id: string) {
+  async function deleteProject(id: string) {
     setProjects((current) => current.filter((project) => project.id !== id));
+    try {
+      await fetch(`/api/projects/${encodeURIComponent(id)}`, { method: "DELETE" });
+      setMessage("Project deleted from archive.");
+    } catch {
+      setMessage("Project removed locally. Database delete is unavailable.");
+    }
   }
 
   function exportSnapshot() {
@@ -566,8 +608,8 @@ function ProjectArchiveView({
   onExportAll
 }: {
   projects: ProjectArchive[];
-  onLoad: (project: ProjectArchive) => void;
-  onDelete: (id: string) => void;
+  onLoad: (project: ProjectArchive) => void | Promise<void>;
+  onDelete: (id: string) => void | Promise<void>;
   onExportAll: () => void;
 }) {
   return (
