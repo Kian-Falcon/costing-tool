@@ -1,6 +1,7 @@
 import { buildInternalCostingCsv, buildInternalCostingXlsx, type CostedBoqRow } from "@kf/importers";
 import { buildInternalCostingPdf } from "../../../../lib/export-documents";
-import { completeExportJob, failExportJob, fileResponse, startExportJob } from "../../../../lib/export-jobs";
+import { authJsonError, requireRole, requireUser } from "../../../../lib/auth";
+import { completeExportJob, failExportJob, fileResponse, startExportJob, storeExportOutput } from "../../../../lib/export-jobs";
 import { z } from "zod";
 
 export const runtime = "nodejs";
@@ -12,24 +13,35 @@ const requestSchema = z.object({
 });
 
 export async function POST(request: Request) {
-  const body = requestSchema.parse(await request.json());
-  const job = await startExportJob("internal-costing", body.format, body.rows.length);
+  let jobId: string | undefined;
 
   try {
+    const user = await requireUser();
+    requireRole(user, "MEMBER");
+    const body = requestSchema.parse(await request.json());
+    const job = await startExportJob("internal-costing", body.format, body.rows.length, user);
+    jobId = job.id;
+
     if (body.format === "xlsx") {
-      await completeExportJob(job.id, "internal-costing.xlsx");
-      return fileResponse(buildInternalCostingXlsx(body.rows), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "internal-costing.xlsx", job.id);
+      const buffer = buildInternalCostingXlsx(body.rows);
+      const file = await storeExportOutput({ user, filename: "internal-costing.xlsx", contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", body: buffer });
+      await completeExportJob(job.id, file.storageKey, file.id);
+      return fileResponse(buffer, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "internal-costing.xlsx", job.id);
     }
 
     if (body.format === "pdf") {
-      await completeExportJob(job.id, "internal-costing.pdf");
-      return fileResponse(await buildInternalCostingPdf(body.rows), "application/pdf", "internal-costing.pdf", job.id);
+      const buffer = await buildInternalCostingPdf(body.rows);
+      const file = await storeExportOutput({ user, filename: "internal-costing.pdf", contentType: "application/pdf", body: buffer });
+      await completeExportJob(job.id, file.storageKey, file.id);
+      return fileResponse(buffer, "application/pdf", "internal-costing.pdf", job.id);
     }
 
-    await completeExportJob(job.id, "internal-costing.csv");
-    return fileResponse(buildInternalCostingCsv(body.rows), "text/csv; charset=utf-8", "internal-costing.csv", job.id);
+    const csv = buildInternalCostingCsv(body.rows);
+    const file = await storeExportOutput({ user, filename: "internal-costing.csv", contentType: "text/csv; charset=utf-8", body: csv });
+    await completeExportJob(job.id, file.storageKey, file.id);
+    return fileResponse(csv, "text/csv; charset=utf-8", "internal-costing.csv", job.id);
   } catch (error) {
-    await failExportJob(job.id, error);
-    throw error;
+    if (jobId) await failExportJob(jobId, error);
+    return authJsonError(error);
   }
 }

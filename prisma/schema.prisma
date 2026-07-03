@@ -15,6 +15,9 @@ model Organization {
   rates     RateItem[]
   vendors   Vendor[]
   trainingSources TrainingSource[]
+  uploadedFiles UploadedFile[]
+  exportJobs ExportJob[]
+  processingJobs ProcessingJob[]
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
@@ -28,6 +31,9 @@ model User {
   passwordHash   String?
   role           UserRole     @default(MEMBER)
   lastLoginAt    DateTime?
+  uploadedFiles  UploadedFile[]
+  exportJobs     ExportJob[]
+  processingJobs ProcessingJob[]
   createdAt      DateTime     @default(now())
   updatedAt      DateTime     @updatedAt
 }
@@ -199,13 +205,22 @@ model VendorMaterial {
 
 model UploadedFile {
   id        String   @id @default(cuid())
+  organizationId String?
+  organization   Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  uploadedById String?
+  uploadedBy   User?    @relation(fields: [uploadedById], references: [id])
   filename  String
   mimeType  String
   sizeBytes Int
+  provider  String   @default("local")
+  bucket    String?
   storageKey String
+  checksum  String?
   boqs      Boq[]
   trainingSources TrainingSource[]
   pdfPages  PdfPage[]
+  exportJobs ExportJob[]
+  processingJobs ProcessingJob[]
   createdAt DateTime @default(now())
 }
 
@@ -251,13 +266,40 @@ model AiCacheEntry {
 }
 
 model ExportJob {
-  id        String   @id @default(cuid())
-  kind      String
-  status    String
-  input     Json
-  outputKey String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id             String   @id @default(cuid())
+  organizationId String?
+  organization   Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  userId         String?
+  user           User?    @relation(fields: [userId], references: [id])
+  fileId         String?
+  file           UploadedFile? @relation(fields: [fileId], references: [id])
+  kind           String
+  status         String
+  input          Json
+  outputKey      String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
+
+model ProcessingJob {
+  id             String   @id @default(cuid())
+  organizationId String?
+  organization   Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  userId         String?
+  user           User?    @relation(fields: [userId], references: [id])
+  fileId         String?
+  file           UploadedFile? @relation(fields: [fileId], references: [id])
+  type           String
+  status         String
+  input          Json
+  output         Json?
+  error          String?
+  attempts       Int      @default(0)
+  availableAt    DateTime @default(now())
+  startedAt      DateTime?
+  completedAt    DateTime?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 }
 
 enum UserRole {

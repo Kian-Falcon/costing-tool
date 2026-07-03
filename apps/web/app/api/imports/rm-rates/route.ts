@@ -1,6 +1,9 @@
 import { parseRmRateRows, parseRmRatesWorkbook } from "@kf/importers";
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { authJsonError, requireRole, requireUser } from "../../../../lib/auth";
+import { storeUploadedFile } from "../../../../lib/file-storage";
+import { completeProcessingJob, startProcessingJob } from "../../../../lib/processing-jobs";
 
 export const runtime = "nodejs";
 
@@ -10,15 +13,26 @@ const jsonSchema = z.object({
 });
 
 export async function POST(request: Request) {
-  const contentType = request.headers.get("content-type") ?? "";
+  try {
+    const user = await requireUser();
+    requireRole(user, "MEMBER");
+    const contentType = request.headers.get("content-type") ?? "";
 
-  if (contentType.includes("multipart/form-data")) {
-    const form = await request.formData();
-    const file = form.get("file");
-    if (!(file instanceof File)) return NextResponse.json({ error: "Expected a file field." }, { status: 400 });
-    return NextResponse.json(parseRmRatesWorkbook(Buffer.from(await file.arrayBuffer()), file.name));
+    if (contentType.includes("multipart/form-data")) {
+      const form = await request.formData();
+      const file = form.get("file");
+      if (!(file instanceof File)) return NextResponse.json({ error: "Expected a file field." }, { status: 400 });
+      const buffer = Buffer.from(await file.arrayBuffer());
+      const uploadedFile = await storeUploadedFile({ user, filename: file.name, mimeType: file.type || "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", buffer, purpose: "rates" });
+      const job = await startProcessingJob({ type: "rates-import", user, fileId: uploadedFile.id, payload: { filename: file.name, sizeBytes: buffer.byteLength } });
+      const result = parseRmRatesWorkbook(buffer, file.name);
+      await completeProcessingJob(job.id, { rowsImported: result.rowsImported, rowsRead: result.rowsRead, vendors: result.vendors.length });
+      return NextResponse.json({ ...result, fileId: uploadedFile.id, jobId: job.id });
+    }
+
+    const body = jsonSchema.parse(await request.json());
+    return NextResponse.json(parseRmRateRows(body.rows, body.sourceFile));
+  } catch (error) {
+    return authJsonError(error);
   }
-
-  const body = jsonSchema.parse(await request.json());
-  return NextResponse.json(parseRmRateRows(body.rows, body.sourceFile));
 }

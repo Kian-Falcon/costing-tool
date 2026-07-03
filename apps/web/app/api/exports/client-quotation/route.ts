@@ -1,6 +1,7 @@
 import { buildClientQuotationCsv, buildClientQuotationXlsx, type CostedBoqRow } from "@kf/importers";
 import { buildClientQuotationPdf } from "../../../../lib/export-documents";
-import { completeExportJob, failExportJob, fileResponse, startExportJob } from "../../../../lib/export-jobs";
+import { authJsonError, requireRole, requireUser } from "../../../../lib/auth";
+import { completeExportJob, failExportJob, fileResponse, startExportJob, storeExportOutput } from "../../../../lib/export-jobs";
 import { z } from "zod";
 
 export const runtime = "nodejs";
@@ -12,24 +13,35 @@ const requestSchema = z.object({
 });
 
 export async function POST(request: Request) {
-  const body = requestSchema.parse(await request.json());
-  const job = await startExportJob("client-quotation", body.format, body.rows.length);
+  let jobId: string | undefined;
 
   try {
+    const user = await requireUser();
+    requireRole(user, "MEMBER");
+    const body = requestSchema.parse(await request.json());
+    const job = await startExportJob("client-quotation", body.format, body.rows.length, user);
+    jobId = job.id;
+
     if (body.format === "xlsx") {
-      await completeExportJob(job.id, "client-quotation.xlsx");
-      return fileResponse(buildClientQuotationXlsx(body.rows), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "client-quotation.xlsx", job.id);
+      const buffer = buildClientQuotationXlsx(body.rows);
+      const file = await storeExportOutput({ user, filename: "client-quotation.xlsx", contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", body: buffer });
+      await completeExportJob(job.id, file.storageKey, file.id);
+      return fileResponse(buffer, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "client-quotation.xlsx", job.id);
     }
 
     if (body.format === "pdf") {
-      await completeExportJob(job.id, "client-quotation.pdf");
-      return fileResponse(await buildClientQuotationPdf(body.rows), "application/pdf", "client-quotation.pdf", job.id);
+      const buffer = await buildClientQuotationPdf(body.rows);
+      const file = await storeExportOutput({ user, filename: "client-quotation.pdf", contentType: "application/pdf", body: buffer });
+      await completeExportJob(job.id, file.storageKey, file.id);
+      return fileResponse(buffer, "application/pdf", "client-quotation.pdf", job.id);
     }
 
-    await completeExportJob(job.id, "client-quotation.csv");
-    return fileResponse(buildClientQuotationCsv(body.rows), "text/csv; charset=utf-8", "client-quotation.csv", job.id);
+    const csv = buildClientQuotationCsv(body.rows);
+    const file = await storeExportOutput({ user, filename: "client-quotation.csv", contentType: "text/csv; charset=utf-8", body: csv });
+    await completeExportJob(job.id, file.storageKey, file.id);
+    return fileResponse(csv, "text/csv; charset=utf-8", "client-quotation.csv", job.id);
   } catch (error) {
-    await failExportJob(job.id, error);
-    throw error;
+    if (jobId) await failExportJob(jobId, error);
+    return authJsonError(error);
   }
 }

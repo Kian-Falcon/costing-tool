@@ -1,80 +1,91 @@
 import { parseBoqRows } from "@kf/importers";
-import { createHash } from "node:crypto";
 import { PDFParse } from "pdf-parse";
 import { NextResponse } from "next/server";
 import { callAiText, extractJsonArray, type AiProvider } from "../../../../lib/ai-providers";
+import { authJsonError, requireRole, requireUser } from "../../../../lib/auth";
 import { env } from "../../../../lib/env";
+import { storeUploadedFile } from "../../../../lib/file-storage";
+import { completeProcessingJob, failProcessingJob, startProcessingJob } from "../../../../lib/processing-jobs";
 import { prisma } from "../../../../lib/prisma";
 
 export const runtime = "nodejs";
 
 export async function POST(request: Request) {
-  const form = await request.formData();
-  const file = form.get("file");
-  if (!(file instanceof File)) return NextResponse.json({ error: "Expected a PDF file field." }, { status: 400 });
-
-  const provider = chooseProvider(String(form.get("provider") ?? ""));
-  const buffer = Buffer.from(await file.arrayBuffer());
-  const parser = new PDFParse({ data: buffer });
-  const parsed = await parser.getText();
-  await parser.destroy();
-  const text = (parsed.text ?? "").trim();
-  const uploadedFile = await prisma.uploadedFile.create({
-    data: {
-      filename: file.name,
-      mimeType: file.type || "application/pdf",
-      sizeBytes: buffer.byteLength,
-      storageKey: `memory:${sha256(buffer)}`
-    }
-  });
-
-  await prisma.pdfPage.create({
-    data: {
-      fileId: uploadedFile.id,
-      pageNo: 1,
-      text
-    }
-  });
-
-  if (!text) {
-    return NextResponse.json({ error: "No text could be extracted from the PDF.", fileId: uploadedFile.id }, { status: 422 });
-  }
-
-  if (!provider) {
-    const fallbackRows = heuristicRows(text);
-    return NextResponse.json({
-      fileId: uploadedFile.id,
-      status: "extracted_without_ai",
-      warning: "Configure OPENAI_API_KEY or ANTHROPIC_API_KEY for structured PDF BOQ extraction.",
-      textPreview: text.slice(0, 4000),
-      items: parseBoqRows(fallbackRows)
-    });
-  }
-
-  const prompt = buildPdfExtractionPrompt(text);
   try {
-    const ai = await callAiText({ provider, prompt, promptVersion: "boq-pdf-extract-v1" });
-    const rows = extractJsonArray(ai.text).map((row) => row as Record<string, unknown>);
-    return NextResponse.json({
-      fileId: uploadedFile.id,
-      provider,
-      modelId: ai.modelId,
-      aiRequestId: ai.requestId,
-      rows,
-      items: parseBoqRows(rows),
-      textPreview: text.slice(0, 2000)
-    });
-  } catch (error) {
-    const fallbackRows = heuristicRows(text);
-    return NextResponse.json(
-      {
+    const user = await requireUser();
+    requireRole(user, "MEMBER");
+    const form = await request.formData();
+    const file = form.get("file");
+    if (!(file instanceof File)) return NextResponse.json({ error: "Expected a PDF file field." }, { status: 400 });
+
+    const provider = chooseProvider(String(form.get("provider") ?? ""));
+    const buffer = Buffer.from(await file.arrayBuffer());
+    const uploadedFile = await storeUploadedFile({ user, filename: file.name, mimeType: file.type || "application/pdf", buffer, purpose: "pdf" });
+    const job = await startProcessingJob({ type: "pdf-boq-extraction", user, fileId: uploadedFile.id, payload: { filename: file.name, provider: provider ?? "heuristic" } });
+    const parser = new PDFParse({ data: buffer });
+    const parsed = await parser.getText();
+    await parser.destroy();
+    const text = (parsed.text ?? "").trim();
+
+    await prisma.pdfPage.create({
+      data: {
         fileId: uploadedFile.id,
-        error: error instanceof Error ? error.message : "AI PDF extraction failed.",
+        pageNo: 1,
+        text
+      }
+    });
+
+    if (!text) {
+      await failProcessingJob(job.id, "No text could be extracted from the PDF.");
+      return NextResponse.json({ error: "No text could be extracted from the PDF.", fileId: uploadedFile.id, jobId: job.id }, { status: 422 });
+    }
+
+    if (!provider) {
+      const fallbackRows = heuristicRows(text);
+      const items = parseBoqRows(fallbackRows);
+      await completeProcessingJob(job.id, { itemCount: items.length, mode: "heuristic" });
+      return NextResponse.json({
+        fileId: uploadedFile.id,
+        jobId: job.id,
+        status: "extracted_without_ai",
+        warning: "Configure OPENAI_API_KEY or ANTHROPIC_API_KEY for structured PDF BOQ extraction.",
         textPreview: text.slice(0, 4000),
-        fallbackItems: parseBoqRows(fallbackRows)
-      },
-      { status: 502 }
-    );
+        items
+      });
+    }
+
+    const prompt = buildPdfExtractionPrompt(text);
+    try {
+      const ai = await callAiText({ provider, prompt, promptVersion: "boq-pdf-extract-v1" });
+      const rows = extractJsonArray(ai.text).map((row) => row as Record<string, unknown>);
+      const items = parseBoqRows(rows);
+      await completeProcessingJob(job.id, { itemCount: items.length, provider, aiRequestId: ai.requestId });
+      return NextResponse.json({
+        fileId: uploadedFile.id,
+        jobId: job.id,
+        provider,
+        modelId: ai.modelId,
+        aiRequestId: ai.requestId,
+        rows,
+        items,
+        textPreview: text.slice(0, 2000)
+      });
+    } catch (error) {
+      const fallbackRows = heuristicRows(text);
+      await failProcessingJob(job.id, error);
+      return NextResponse.json(
+        {
+          fileId: uploadedFile.id,
+          jobId: job.id,
+          error: error instanceof Error ? error.message : "AI PDF extraction failed.",
+          textPreview: text.slice(0, 4000),
+          fallbackItems: parseBoqRows(fallbackRows)
+        },
+        { status: 502 }
+      );
+    }
+  } catch (error) {
+    return authJsonError(error);
   }
 }
 
@@ -120,8 +131,4 @@ function heuristicRows(text: string): Record<string, unknown>[] {
         Qty: qtyMatch ? Number(qtyMatch[1]) : 1
       };
     });
-}
-
-function sha256(buffer: Buffer): string {
-  return createHash("sha256").update(buffer).digest("hex");
 }
