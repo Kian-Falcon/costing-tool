@@ -59,13 +59,13 @@ type ExportJob = {
   updatedAt: string;
 };
 
-type ActiveView = "workspace" | "projects" | "rates" | "vendors" | "training" | "models" | "editor";
+type ActiveView = "workspace" | "projects" | "rates" | "vendors" | "training" | "models" | "exports" | "editor";
 
 const SNAPSHOT_KEY = "kf-costing-workspace-v2";
 const ARCHIVE_KEY = "kf-costing-project-archive-v1";
 const EMPTY_IMPORTS: ImportState = { corpus: [], rates: [], vendors: [], trainingRows: 0, rateRows: 0 };
 
-export function CostingWorkspace() {
+export function CostingWorkspace({ initialView = "workspace" }: { initialView?: ActiveView } = {}) {
   const [projectName, setProjectName] = useState("Untitled BOQ");
   const [clientName, setClientName] = useState("");
   const [imports, setImports] = useState<ImportState>(EMPTY_IMPORTS);
@@ -73,7 +73,7 @@ export function CostingWorkspace() {
   const [costed, setCosted] = useState<CostedRow[]>([]);
   const [projects, setProjects] = useState<ProjectArchive[]>([]);
   const [exportJobs, setExportJobs] = useState<ExportJob[]>([]);
-  const [activeView, setActiveView] = useState<ActiveView>("workspace");
+  const [activeView, setActiveView] = useState<ActiveView>(initialView);
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
   const [rateSearch, setRateSearch] = useState("");
   const [vendorSearch, setVendorSearch] = useState("");
@@ -146,6 +146,10 @@ export function CostingWorkspace() {
     if (!hydrated.current) return;
     window.localStorage.setItem(ARCHIVE_KEY, JSON.stringify(projects));
   }, [projects]);
+
+  useEffect(() => {
+    setActiveView(initialView);
+  }, [initialView]);
 
   async function importTraining(file: File) {
     setBusy("training");
@@ -518,6 +522,23 @@ export function CostingWorkspace() {
     setLastSaved(snapshot.savedAt);
   }
 
+  const exportControls = (
+    <div className="grid gap-3">
+      <ExportButtonRow title="Client quotation" disabled={!costed.length} busy={busy} kind="client-quotation" formats={["csv", "xlsx", "pdf"]} onExport={exportFile} />
+      <ExportButtonRow title="Internal costing" disabled={!costed.length} busy={busy} kind="internal-costing" formats={["csv", "xlsx", "pdf"]} onExport={exportFile} />
+      <ExportButtonRow title="PI" disabled={!costed.length} busy={busy} kind="pi" formats={["xlsx", "pdf"]} onExport={exportFile} />
+      <ExportHistory jobs={exportJobs} />
+      <button onClick={exportSnapshot} className="rounded-md border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50">
+        Save snapshot
+      </button>
+      <UploadButton label="Load snapshot" busy={busy === "snapshot"} accept=".json" onFile={importSnapshot} />
+      <button onClick={clearSavedWorkspace} className="flex items-center justify-center gap-2 rounded-md border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50">
+        <Trash2 size={15} />
+        Clear saved workspace
+      </button>
+    </div>
+  );
+
   return (
     <section className="grid gap-6 xl:grid-cols-[340px_1fr]">
       <aside className="space-y-4">
@@ -561,20 +582,7 @@ export function CostingWorkspace() {
         </Panel>
 
         <Panel title="Exports" icon={<Download size={18} />}>
-          <div className="grid gap-3">
-            <ExportButtonRow title="Client quotation" disabled={!costed.length} busy={busy} kind="client-quotation" formats={["csv", "xlsx", "pdf"]} onExport={exportFile} />
-            <ExportButtonRow title="Internal costing" disabled={!costed.length} busy={busy} kind="internal-costing" formats={["csv", "xlsx", "pdf"]} onExport={exportFile} />
-            <ExportButtonRow title="PI" disabled={!costed.length} busy={busy} kind="pi" formats={["xlsx", "pdf"]} onExport={exportFile} />
-            <ExportHistory jobs={exportJobs} />
-            <button onClick={exportSnapshot} className="rounded-md border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50">
-              Save snapshot
-            </button>
-            <UploadButton label="Load snapshot" busy={busy === "snapshot"} accept=".json" onFile={importSnapshot} />
-            <button onClick={clearSavedWorkspace} className="flex items-center justify-center gap-2 rounded-md border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50">
-              <Trash2 size={15} />
-              Clear saved workspace
-            </button>
-          </div>
+          {exportControls}
         </Panel>
       </aside>
 
@@ -594,6 +602,7 @@ export function CostingWorkspace() {
               ["vendors", "Vendors"],
               ["training", "Training"],
               ["models", "Models"],
+              ["exports", "Exports"],
               ["editor", "Row Editor"]
             ].map(([key, label]) => (
               <button
@@ -629,6 +638,12 @@ export function CostingWorkspace() {
         {activeView === "training" && <TrainingDataView imports={imports} />}
 
         {activeView === "models" && <ModelView models={models} ratioNorms={ratioNorms} />}
+
+        {activeView === "exports" && (
+          <Panel title="Exports" icon={<Download size={18} />}>
+            {exportControls}
+          </Panel>
+        )}
 
         {activeView === "editor" && (
           <RowEditor
