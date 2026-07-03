@@ -1,7 +1,7 @@
 "use client";
 
-import { rebuildModelsFromCorpus, rebuildRatioNorms } from "@kf/costing-engine";
-import type { BoqItem, CorpusProduct, CostResult, RateItem, RatioNorm, TrainedModel } from "@kf/shared";
+import { costItem, rebuildModelsFromCorpus, rebuildRatioNorms } from "@kf/costing-engine";
+import type { AddedMaterial, BoqItem, CorpusProduct, CostResult, MaterialBreakdownLine, RateItem, RatioNorm, TrainedModel } from "@kf/shared";
 import { Calculator, Database, Download, FileUp, Library, Loader2, Save, Trash2, UploadCloud } from "lucide-react";
 import type { ReactNode } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -94,6 +94,14 @@ export function CostingWorkspace() {
   const models = useMemo(() => rebuildModelsFromCorpus(imports.corpus), [imports.corpus]);
   const ratioNorms = useMemo(() => rebuildRatioNorms(imports.corpus), [imports.corpus]);
   const selectedItem = items.find((item) => item.id === selectedItemId) ?? items[0];
+  const baselineResult = useMemo(
+    () => (selectedItem ? costItem({ item: stripMaterialOverrides(selectedItem), rates: imports.rates, corpus: imports.corpus, models, ratioNorms }) : undefined),
+    [selectedItem, imports.rates, imports.corpus, models, ratioNorms]
+  );
+  const reviewRows = useMemo(
+    () => costed.filter((row) => row.result.confidence < 0.55 || row.result.matchLevel === "new" || row.result.source === "seed"),
+    [costed]
+  );
 
   useEffect(() => {
     const saved = window.localStorage.getItem(SNAPSHOT_KEY) ?? window.localStorage.getItem("kf-costing-workspace-v1");
@@ -230,12 +238,18 @@ export function CostingWorkspace() {
     return (await response.json()) as { items: CostedRow[]; meta: { modelCount: number; ratioNormCount: number } };
   }
 
-  function updateItem(itemId: string, patch: Partial<BoqItem>) {
+  function updateItem(itemId: string, patch: Partial<BoqItem>, options: { keepCosted?: boolean; result?: CostResult } = {}) {
     const previous = items.find((item) => item.id === itemId);
+    const nextItem = previous ? { ...previous, ...patch } : undefined;
     setItems((current) => current.map((item) => (item.id === itemId ? { ...item, ...patch } : item)));
-    setCosted((current) => current.filter((row) => row.item.id !== itemId));
+    setCosted((current) => {
+      if (!options.keepCosted) return current.filter((row) => row.item.id !== itemId);
+      const existing = current.find((row) => row.item.id === itemId);
+      if (!existing || !nextItem) return current;
+      return current.map((row) => (row.item.id === itemId ? { item: nextItem, result: options.result ?? row.result } : row));
+    });
     if (previous) void logCorrections(previous, patch);
-    setMessage("Row updated. Re-cost the row or run cost all.");
+    setMessage(options.keepCosted ? "Material override applied." : "Row updated. Re-cost the row or run cost all.");
   }
 
   function updateRate(key: string, patch: Partial<RateItem>) {
@@ -620,11 +634,15 @@ export function CostingWorkspace() {
           <RowEditor
             item={selectedItem}
             costed={costed.find((row) => row.item.id === selectedItem?.id)}
+            baseline={baselineResult}
+            rates={imports.rates}
+            reviewRows={reviewRows}
             busy={selectedItem ? busy === `cost:${selectedItem.id}` : false}
             aiBusy={selectedItem ? busy === `ai:openai:${selectedItem.id}` || busy === `ai:anthropic:${selectedItem.id}` : false}
             onUpdate={updateItem}
             onRecost={recostItem}
             onAiCost={aiCostItem}
+            onSelect={setSelectedItemId}
           />
         )}
       </div>
@@ -702,22 +720,83 @@ function WorkspaceTable({
 function RowEditor({
   item,
   costed,
+  baseline,
+  rates,
+  reviewRows,
   busy,
   aiBusy,
   onUpdate,
   onRecost,
-  onAiCost
+  onAiCost,
+  onSelect
 }: {
   item?: BoqItem;
   costed?: CostedRow;
+  baseline?: CostResult;
+  rates: RateItem[];
+  reviewRows: CostedRow[];
   busy: boolean;
   aiBusy: boolean;
-  onUpdate: (itemId: string, patch: Partial<BoqItem>) => void;
+  onUpdate: (itemId: string, patch: Partial<BoqItem>, options?: { keepCosted?: boolean; result?: CostResult }) => void;
   onRecost: (item: BoqItem) => void;
   onAiCost: (item: BoqItem, provider: "openai" | "anthropic") => void;
+  onSelect: (itemId: string) => void;
 }) {
   if (!item) return <EmptyState title="No BOQ row selected" text="Upload a BOQ, then select a row to edit costing inputs." />;
-  const update = (patch: Partial<BoqItem>) => onUpdate(item.id, patch);
+  const rowItem = item;
+  const update = (patch: Partial<BoqItem>) => onUpdate(rowItem.id, patch);
+  const baselineRaw = baseline?.raw ?? 0;
+  const variance = costed && baselineRaw ? ((costed.result.raw - baselineRaw) / baselineRaw) * 100 : 0;
+  const materialRows = buildMaterialRows(costed?.result.breakdown ?? [], baseline?.breakdown ?? [], rowItem);
+
+  function applyMaterialPatch(patch: Partial<BoqItem>, result: CostResult) {
+    onUpdate(rowItem.id, patch, { keepCosted: true, result });
+  }
+
+  function updateMaterial(row: EditableMaterialLine, patch: Partial<MaterialBreakdownLine>) {
+    if (!costed) return;
+    const nextBreakdown = costed.result.breakdown.map((line, index) => {
+      if (index !== row.index) return line;
+      const next = { ...line, ...patch };
+      return { ...next, amount: roundMoney(next.qty * next.rate) };
+    });
+    const nextResult = recalcResult(costed.result, nextBreakdown, rowItem);
+    applyMaterialPatch(buildMaterialPatch(rowItem, row, patch), nextResult);
+  }
+
+  function removeMaterial(row: EditableMaterialLine) {
+    if (!costed) return;
+    const nextBreakdown = costed.result.breakdown.filter((_, index) => index !== row.index);
+    const nextResult = recalcResult(costed.result, nextBreakdown, rowItem);
+    if (row.addedIndex !== undefined) {
+      applyMaterialPatch({ addedMaterials: (rowItem.addedMaterials ?? []).filter((_, index) => index !== row.addedIndex) }, nextResult);
+      return;
+    }
+    applyMaterialPatch({ qtyOverrides: { ...(rowItem.qtyOverrides ?? {}), [row.baseKey]: 0 } }, nextResult);
+  }
+
+  function addMaterial() {
+    if (!costed) return;
+    const rate = rates[0];
+    const material: AddedMaterial = {
+      materialKey: rate?.key ?? "custom_material",
+      label: rate?.label ?? "Custom material",
+      qty: 1,
+      rate: rate?.rate ?? 0,
+      unit: rate?.unit ?? "NOS"
+    };
+    const nextLine: MaterialBreakdownLine = {
+      materialKey: material.materialKey,
+      label: material.label ?? material.materialKey,
+      qty: material.qty,
+      unit: material.unit ?? "NOS",
+      rate: material.rate ?? 0,
+      amount: roundMoney(material.qty * (material.rate ?? 0)),
+      source: "added"
+    };
+    const nextBreakdown = [...costed.result.breakdown, nextLine];
+    applyMaterialPatch({ addedMaterials: [...(rowItem.addedMaterials ?? []), material] }, recalcResult(costed.result, nextBreakdown, rowItem));
+  }
 
   return (
     <div className="grid gap-4 lg:grid-cols-[1fr_360px]">
@@ -762,17 +841,16 @@ function RowEditor({
           <div className="space-y-2">
             <Metric label="Factory" value={costed.result.factory} />
             <Metric label="Sell" value={costed.result.sell} />
-            <div className="max-h-[460px] overflow-auto rounded-md border border-slate-200">
-              {costed.result.breakdown.map((line) => (
-                <div key={`${line.materialKey}:${line.label}`} className="border-t border-slate-100 p-3 first:border-t-0">
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <div className="text-sm font-medium text-ink">{line.label}</div>
-                      <div className="text-xs text-slate-500">{line.qty.toFixed(3)} {line.unit} x {format(line.rate)}</div>
-                    </div>
-                    <div className="text-sm font-semibold text-ink">{format(line.amount)}</div>
-                  </div>
-                </div>
+            <div className="rounded-md bg-slate-50 p-3 text-xs text-slate-600">
+              Baseline raw {format(baselineRaw)} | Current raw {format(costed.result.raw)} | Variance{" "}
+              <span className={Math.abs(variance) > 15 ? "font-semibold text-copper" : "font-semibold text-emerald-700"}>{variance.toFixed(1)}%</span>
+            </div>
+            <button type="button" onClick={addMaterial} className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50">
+              Add material row
+            </button>
+            <div className="max-h-[520px] overflow-auto rounded-md border border-slate-200">
+              {materialRows.map((row) => (
+                <MaterialEditorRow key={`${row.index}:${row.materialKey}:${row.label}`} row={row} rates={rates} onUpdate={(patch) => updateMaterial(row, patch)} onRemove={() => removeMaterial(row)} />
               ))}
             </div>
           </div>
@@ -780,6 +858,100 @@ function RowEditor({
           <EmptyState title="No current costing" text="Re-cost this row to inspect its material breakdown." />
         )}
       </Panel>
+
+      <div className="lg:col-span-2">
+        <Panel title="Confidence Review Queue" icon={<Database size={18} />}>
+          {reviewRows.length ? (
+            <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+              {reviewRows.map((row) => (
+                <button key={row.item.id} type="button" onClick={() => onSelect(row.item.id)} className="rounded-md border border-slate-200 p-3 text-left hover:bg-slate-50">
+                  <div className="truncate text-sm font-medium text-ink">{row.item.name}</div>
+                  <div className="mt-1 text-xs text-slate-500">{row.result.matchLabel}</div>
+                  <div className="mt-2 text-xs font-semibold text-copper">Confidence {(row.result.confidence * 100).toFixed(0)}%</div>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <EmptyState title="No review rows" text="Low confidence and new seed estimates will appear here after costing." />
+          )}
+        </Panel>
+      </div>
+    </div>
+  );
+}
+
+type EditableMaterialLine = MaterialBreakdownLine & {
+  index: number;
+  baseKey: string;
+  addedIndex?: number;
+  baselineAmount: number;
+  variancePct: number;
+};
+
+function MaterialEditorRow({
+  row,
+  rates,
+  onUpdate,
+  onRemove
+}: {
+  row: EditableMaterialLine;
+  rates: RateItem[];
+  onUpdate: (patch: Partial<MaterialBreakdownLine>) => void;
+  onRemove: () => void;
+}) {
+  return (
+    <div className="border-t border-slate-100 p-3 first:border-t-0">
+      <div className="grid gap-2">
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0">
+            <div className="truncate text-sm font-medium text-ink">{row.label}</div>
+            <div className="text-xs text-slate-500">
+              Base {format(row.baselineAmount)} | Variance{" "}
+              <span className={Math.abs(row.variancePct) > 15 ? "font-semibold text-copper" : "font-semibold text-emerald-700"}>{row.variancePct.toFixed(1)}%</span>
+            </div>
+          </div>
+          <button type="button" onClick={onRemove} className="rounded-md border border-slate-300 px-2 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50">
+            Remove
+          </button>
+        </div>
+        <label className="grid gap-1 text-xs font-medium text-slate-600">
+          Material key
+          <select
+            value={row.materialKey}
+            onChange={(event) => {
+              const rate = rates.find((item) => item.key === event.target.value);
+              onUpdate({ materialKey: event.target.value, label: rate?.label ?? event.target.value, unit: rate?.unit ?? row.unit, rate: rate?.rate ?? row.rate });
+            }}
+            className="rounded-md border border-slate-300 bg-white px-2 py-2 text-xs font-normal text-ink"
+          >
+            <option value={row.materialKey}>{row.materialKey}</option>
+            {rates
+              .filter((rate) => rate.key !== row.materialKey)
+              .slice(0, 400)
+              .map((rate) => (
+                <option key={rate.key} value={rate.key}>
+                  {rate.key} - {rate.label}
+                </option>
+              ))}
+          </select>
+        </label>
+        <div className="grid grid-cols-2 gap-2">
+          <NumberInput label="Qty" value={row.qty} onChange={(value) => onUpdate({ qty: value })} />
+          <NumberInput label="Rate" value={row.rate} onChange={(value) => onUpdate({ rate: value })} />
+          <TextInput label="Unit" value={row.unit} onChange={(value) => onUpdate({ unit: value })} />
+          <label className="grid gap-1 text-xs font-medium text-slate-600">
+            Type
+            <select value={row.source} onChange={(event) => onUpdate({ source: event.target.value as MaterialBreakdownLine["source"] })} className="rounded-md border border-slate-300 bg-white px-2 py-2 text-xs font-normal text-ink">
+              {["estimate", "override", "ai", "added", "spec", "fixed", "geometry", "dataset", "seed", "model", "user"].map((source) => (
+                <option key={source} value={source}>
+                  {source}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+        <div className="rounded-md bg-slate-50 p-2 text-right text-sm font-semibold text-ink">{format(row.amount)}</div>
+      </div>
     </div>
   );
 }
@@ -1166,6 +1338,74 @@ function groupCounts(values: string[]): Record<string, number> {
   }, {});
 }
 
+function buildMaterialRows(current: MaterialBreakdownLine[], baseline: MaterialBreakdownLine[], item: BoqItem): EditableMaterialLine[] {
+  let addedIndex = 0;
+  return current.map((line, index) => {
+    const isAdded = line.source === "added";
+    const baseKey = findBaseMaterialKey(item, line.materialKey);
+    const baselineLine = baseline.find((entry) => entry.materialKey === baseKey || entry.materialKey === line.materialKey);
+    const baselineAmount = baselineLine?.amount ?? 0;
+    const variancePct = baselineAmount ? ((line.amount - baselineAmount) / baselineAmount) * 100 : 0;
+    const row: EditableMaterialLine = {
+      ...line,
+      index,
+      baseKey,
+      addedIndex: isAdded ? addedIndex : undefined,
+      baselineAmount,
+      variancePct
+    };
+    if (isAdded) addedIndex += 1;
+    return row;
+  });
+}
+
+function buildMaterialPatch(item: BoqItem, row: EditableMaterialLine, patch: Partial<MaterialBreakdownLine>): Partial<BoqItem> {
+  if (row.addedIndex !== undefined) {
+    const addedMaterials = [...(item.addedMaterials ?? [])];
+    const existing = addedMaterials[row.addedIndex] ?? { materialKey: row.materialKey, label: row.label, qty: row.qty, rate: row.rate, unit: row.unit };
+    addedMaterials[row.addedIndex] = {
+      ...existing,
+      materialKey: patch.materialKey ?? existing.materialKey,
+      label: patch.label ?? existing.label,
+      qty: patch.qty ?? existing.qty,
+      rate: patch.rate ?? existing.rate,
+      unit: patch.unit ?? existing.unit
+    };
+    return { addedMaterials };
+  }
+
+  const nextKey = patch.materialKey ?? row.materialKey;
+  const materialOverrides = nextKey !== row.baseKey ? { ...(item.materialOverrides ?? {}), [row.baseKey]: nextKey } : item.materialOverrides;
+  const qtyOverrides = patch.qty !== undefined ? { ...(item.qtyOverrides ?? {}), [row.baseKey]: patch.qty } : item.qtyOverrides;
+  const rateOverrides = patch.rate !== undefined ? { ...(item.rateOverrides ?? {}), [nextKey]: patch.rate } : item.rateOverrides;
+  return { materialOverrides, qtyOverrides, rateOverrides };
+}
+
+function recalcResult(result: CostResult, breakdown: MaterialBreakdownLine[], item: BoqItem): CostResult {
+  const raw = item.rawOverride ?? roundMoney(breakdown.reduce((total, line) => total + line.amount, 0));
+  const factory = item.manualFac ?? roundMoney(raw * 1.65);
+  const margin = Math.min(85, Math.max(0, item.margin));
+  const sell = roundMoney(factory / (1 - margin / 100));
+  return {
+    ...result,
+    raw,
+    factory,
+    sell,
+    total: roundMoney(sell * item.qty),
+    breakdown: breakdown.map((line) => ({ ...line, amount: roundMoney(line.qty * line.rate) }))
+  };
+}
+
+function findBaseMaterialKey(item: BoqItem, materialKey: string): string {
+  const mapped = Object.entries(item.materialOverrides ?? {}).find(([, overrideKey]) => overrideKey === materialKey);
+  return mapped?.[0] ?? materialKey;
+}
+
+function stripMaterialOverrides(item: BoqItem): BoqItem {
+  const { qtyOverrides, rateOverrides, materialOverrides, addedMaterials, rawOverride, ...rest } = item;
+  return rest;
+}
+
 function kindLabel(kind: string): string {
   if (kind === "client-quotation") return "Client quotation";
   if (kind === "internal-costing") return "Internal costing";
@@ -1188,6 +1428,10 @@ function slug(value: string): string {
 
 function sum(values: number[]): number {
   return values.reduce((total, value) => total + value, 0);
+}
+
+function roundMoney(value: number): number {
+  return Math.round(value * 100) / 100;
 }
 
 function format(value: number): string {

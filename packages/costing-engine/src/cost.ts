@@ -23,6 +23,7 @@ export function costItem({ item, rates = BASE_RATES, corpus = [], models = [], r
   const refs = findCorpusReferences({ name: item.name, ptype, ct: item.ct ?? spec, dims: item.dims, corpus });
   const modelPrediction = predictFactoryFromModels({ ptype, ct: item.ct ?? spec, planArea: dims.planArea, models });
   let breakdown: MaterialBreakdownLine[] = estimateLegacyBreakdown({ item, ptype, rates, ratioNorms });
+  const usedLegacyBreakdown = breakdown.length > 0;
 
   if (!breakdown.length) {
     const estimated = estimateMaterials(ptype, {
@@ -46,6 +47,21 @@ export function costItem({ item, rates = BASE_RATES, corpus = [], models = [], r
         amount: roundMoney(qty * unitRate),
         source: item.qtyOverrides?.[line.materialKey] || item.rateOverrides?.[line.materialKey] ? "override" : "estimate"
       };
+    });
+  }
+
+  for (const material of usedLegacyBreakdown ? [] : item.addedMaterials ?? []) {
+    const rate = ratesByKey.get(material.materialKey);
+    const unitRate = item.rateOverrides?.[material.materialKey] ?? material.rate ?? rate?.rate ?? 0;
+    if (!material.qty || !unitRate) continue;
+    breakdown.push({
+      materialKey: material.materialKey,
+      label: material.label ?? rate?.label ?? material.materialKey,
+      qty: material.qty,
+      unit: material.unit ?? rate?.unit ?? "NOS",
+      rate: unitRate,
+      amount: roundMoney(material.qty * unitRate),
+      source: "added"
     });
   }
 
