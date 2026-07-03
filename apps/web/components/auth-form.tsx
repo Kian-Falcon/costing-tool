@@ -1,6 +1,7 @@
 "use client";
 
 import { Loader2 } from "lucide-react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
@@ -52,6 +53,23 @@ export function AuthForm({ mode }: { mode: "login" | "register" }) {
             {busy && <Loader2 className="animate-spin" size={16} />}
             {mode === "register" ? "Create account" : "Sign in"}
           </button>
+          <div className="text-center text-sm text-slate-600">
+            {mode === "register" ? (
+              <>
+                Already have an account?{" "}
+                <Link href="/login" className="font-semibold text-moss">
+                  Sign in
+                </Link>
+              </>
+            ) : (
+              <>
+                First time setup?{" "}
+                <Link href="/register" className="font-semibold text-moss">
+                  Create owner account
+                </Link>
+              </>
+            )}
+          </div>
         </div>
       </div>
     </div>
