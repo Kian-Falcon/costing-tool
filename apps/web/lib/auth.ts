@@ -1,6 +1,8 @@
 import { type UserRole } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import { createHmac, pbkdf2Sync, randomBytes, timingSafeEqual } from "crypto";
 import { cookies } from "next/headers";
+import { ZodError } from "zod";
 import { prisma } from "./prisma";
 
 export const SESSION_COOKIE = "kf_session";
@@ -83,6 +85,10 @@ export function requireRole(user: CurrentUser, role: UserRole) {
 
 export function authJsonError(error: unknown) {
   if (error instanceof AuthError) return Response.json({ error: error.message }, { status: error.status });
+  if (error instanceof ZodError) return Response.json({ error: "Invalid form data." }, { status: 400 });
+  if (error instanceof Prisma.PrismaClientKnownRequestError || error instanceof Prisma.PrismaClientInitializationError || error instanceof Prisma.PrismaClientValidationError) {
+    return Response.json({ error: databaseSetupMessage(error) }, { status: 500 });
+  }
   return Response.json({ error: "Unexpected authentication error." }, { status: 500 });
 }
 
@@ -101,4 +107,14 @@ function sign(payload: string): string {
 
 function authSecret(): string {
   return process.env.AUTH_SECRET || process.env.NEXTAUTH_SECRET || "dev-only-kian-falcon-costing-secret";
+}
+
+function databaseSetupMessage(error: Error): string {
+  if (/passwordHash|lastLoginAt|column|does not exist/i.test(error.message)) {
+    return "Database schema is not updated. Run `npx prisma db push` with the production DATABASE_URL, then redeploy.";
+  }
+  if (/connect|Can't reach|Authentication failed|database/i.test(error.message)) {
+    return "Database connection failed. Check DATABASE_URL in Vercel and Supabase.";
+  }
+  return "Database setup error. Check Vercel function logs for details.";
 }

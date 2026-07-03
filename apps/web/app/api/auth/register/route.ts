@@ -30,11 +30,7 @@ export async function POST(request: Request) {
 
     const organization =
       currentUser?.organization ??
-      (await prisma.organization.upsert({
-        where: { id: await organizationIdForName(body.organizationName) },
-        create: { name: body.organizationName },
-        update: { name: body.organizationName }
-      }));
+      (await findOrCreateOrganization(body.organizationName));
 
     const user = await prisma.user.create({
       data: {
@@ -55,7 +51,8 @@ export async function POST(request: Request) {
   }
 }
 
-async function organizationIdForName(name: string): Promise<string> {
-  const existing = await prisma.organization.findFirst({ where: { name }, orderBy: { createdAt: "asc" }, select: { id: true } });
-  return existing?.id ?? `org_${name.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "") || "workspace"}`;
+async function findOrCreateOrganization(name: string) {
+  const existing = await prisma.organization.findFirst({ where: { name }, orderBy: { createdAt: "asc" } });
+  if (existing) return existing;
+  return prisma.organization.create({ data: { name } });
 }
