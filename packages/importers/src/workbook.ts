@@ -22,6 +22,16 @@ export function csvFromRows(rows: Record<string, unknown>[]): string {
   return XLSX.utils.sheet_to_csv(sheet);
 }
 
+export function xlsxFromRows(rows: Record<string, unknown>[], sheetName = "Export"): Buffer {
+  const sheet = XLSX.utils.json_to_sheet(rows);
+  const headers = Object.keys(rows[0] ?? { Export: "" });
+  sheet["!cols"] = headers.map((header) => ({ wch: Math.min(42, Math.max(12, header.length + 4)) }));
+
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, sheet, sheetName.slice(0, 31));
+  return Buffer.from(XLSX.write(workbook, { bookType: "xlsx", type: "buffer" }));
+}
+
 function pickSheet(sheetNames: string[], requested?: string): string {
   if (requested && sheetNames.includes(requested)) return requested;
   if (requested) {

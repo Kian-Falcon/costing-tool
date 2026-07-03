@@ -1,5 +1,5 @@
 import type { BoqItem, CostResult } from "@kf/shared";
-import { csvFromRows } from "./workbook";
+import { csvFromRows, xlsxFromRows } from "./workbook";
 
 export type CostedBoqRow = {
   item: BoqItem;
@@ -39,10 +39,40 @@ export function buildInternalCostingRows(rows: CostedBoqRow[]): Record<string, u
   }));
 }
 
+export function buildPiRows(rows: CostedBoqRow[]): Record<string, unknown>[] {
+  return rows.map(({ item, result }, index) => ({
+    Sr: index + 1,
+    Code: item.code ?? "",
+    Description: item.name,
+    Specification: item.aiSpec || item.spec || "",
+    Dimensions: item.dims,
+    Qty: item.qty,
+    Unit: "Nos",
+    "Unit Price (INR)": result.sell,
+    "Amount (INR)": result.total
+  }));
+}
+
 export function buildClientQuotationCsv(rows: CostedBoqRow[]): string {
   return csvFromRows(buildClientQuotationRows(rows));
 }
 
 export function buildInternalCostingCsv(rows: CostedBoqRow[]): string {
   return csvFromRows(buildInternalCostingRows(rows));
+}
+
+export function buildPiCsv(rows: CostedBoqRow[]): string {
+  return csvFromRows(buildPiRows(rows));
+}
+
+export function buildClientQuotationXlsx(rows: CostedBoqRow[]): Buffer {
+  return xlsxFromRows(buildClientQuotationRows(rows), "Client Quotation");
+}
+
+export function buildInternalCostingXlsx(rows: CostedBoqRow[]): Buffer {
+  return xlsxFromRows(buildInternalCostingRows(rows), "Internal Costing");
+}
+
+export function buildPiXlsx(rows: CostedBoqRow[]): Buffer {
+  return xlsxFromRows(buildPiRows(rows), "Proforma Invoice");
 }

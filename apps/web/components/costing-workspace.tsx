@@ -47,6 +47,18 @@ type ProjectArchive = {
   snapshot: WorkspaceSnapshot;
 };
 
+type ExportFormat = "csv" | "xlsx" | "pdf";
+
+type ExportJob = {
+  id: string;
+  kind: string;
+  status: string;
+  input: { format?: ExportFormat; rowCount?: number } | Record<string, unknown>;
+  outputKey: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
 type ActiveView = "workspace" | "projects" | "rates" | "vendors" | "training" | "models" | "editor";
 
 const SNAPSHOT_KEY = "kf-costing-workspace-v2";
@@ -60,6 +72,7 @@ export function CostingWorkspace() {
   const [items, setItems] = useState<BoqItem[]>([]);
   const [costed, setCosted] = useState<CostedRow[]>([]);
   const [projects, setProjects] = useState<ProjectArchive[]>([]);
+  const [exportJobs, setExportJobs] = useState<ExportJob[]>([]);
   const [activeView, setActiveView] = useState<ActiveView>("workspace");
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
   const [rateSearch, setRateSearch] = useState("");
@@ -97,6 +110,7 @@ export function CostingWorkspace() {
 
     void refreshProjects();
     void refreshLibraries();
+    void refreshExportJobs();
 
     if (!saved) return;
     try {
@@ -444,21 +458,39 @@ export function CostingWorkspace() {
     setMessage("Saved workspace cleared.");
   }
 
-  async function exportCsv(kind: "client-quotation" | "internal-costing") {
-    setBusy(kind);
+  async function exportFile(kind: "client-quotation" | "internal-costing" | "pi", format: ExportFormat) {
+    setBusy(`${kind}-${format}`);
     const response = await fetch(`/api/exports/${kind}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ rows: costed })
+      body: JSON.stringify({ rows: costed, format })
     });
+    if (!response.ok) {
+      setBusy(null);
+      setMessage("Export failed. Check the export history and server logs.");
+      return;
+    }
     const blob = await response.blob();
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;
-    anchor.download = `${kind}.csv`;
+    anchor.download = `${kind === "pi" ? "proforma-invoice" : kind}.${format}`;
     anchor.click();
     URL.revokeObjectURL(url);
+    await refreshExportJobs();
+    setMessage(`Exported ${kindLabel(kind)} ${format.toUpperCase()}.`);
     setBusy(null);
+  }
+
+  async function refreshExportJobs() {
+    try {
+      const response = await fetch("/api/exports/jobs", { cache: "no-store" });
+      if (!response.ok) return;
+      const payload = (await response.json()) as { jobs: ExportJob[] };
+      setExportJobs(payload.jobs);
+    } catch {
+      // Export history is nice to have; downloads should not depend on it.
+    }
   }
 
   function restoreSnapshot(snapshot: WorkspaceSnapshot) {
@@ -515,13 +547,11 @@ export function CostingWorkspace() {
         </Panel>
 
         <Panel title="Exports" icon={<Download size={18} />}>
-          <div className="grid gap-2">
-            <button disabled={!costed.length} onClick={() => exportCsv("client-quotation")} className="rounded-md border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 disabled:text-slate-300">
-              Client quotation CSV
-            </button>
-            <button disabled={!costed.length} onClick={() => exportCsv("internal-costing")} className="rounded-md border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 disabled:text-slate-300">
-              Internal costing CSV
-            </button>
+          <div className="grid gap-3">
+            <ExportButtonRow title="Client quotation" disabled={!costed.length} busy={busy} kind="client-quotation" formats={["csv", "xlsx", "pdf"]} onExport={exportFile} />
+            <ExportButtonRow title="Internal costing" disabled={!costed.length} busy={busy} kind="internal-costing" formats={["csv", "xlsx", "pdf"]} onExport={exportFile} />
+            <ExportButtonRow title="PI" disabled={!costed.length} busy={busy} kind="pi" formats={["xlsx", "pdf"]} onExport={exportFile} />
+            <ExportHistory jobs={exportJobs} />
             <button onClick={exportSnapshot} className="rounded-md border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50">
               Save snapshot
             </button>
@@ -926,6 +956,68 @@ function ModelView({ models, ratioNorms }: { models: TrainedModel[]; ratioNorms:
   );
 }
 
+function ExportButtonRow({
+  title,
+  kind,
+  formats,
+  disabled,
+  busy,
+  onExport
+}: {
+  title: string;
+  kind: "client-quotation" | "internal-costing" | "pi";
+  formats: ExportFormat[];
+  disabled: boolean;
+  busy: string | null;
+  onExport: (kind: "client-quotation" | "internal-costing" | "pi", format: ExportFormat) => void;
+}) {
+  return (
+    <div className="rounded-md bg-slate-50 p-2">
+      <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">{title}</div>
+      <div className="grid grid-cols-3 gap-1">
+        {formats.map((format) => {
+          const isBusy = busy === `${kind}-${format}`;
+          return (
+            <button
+              key={format}
+              type="button"
+              disabled={disabled || isBusy}
+              onClick={() => onExport(kind, format)}
+              className="flex min-h-9 items-center justify-center gap-1 rounded-md border border-slate-300 bg-white px-2 py-1 text-xs font-medium uppercase text-slate-700 hover:bg-slate-100 disabled:text-slate-300"
+            >
+              {isBusy && <Loader2 className="animate-spin" size={13} />}
+              {format}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function ExportHistory({ jobs }: { jobs: ExportJob[] }) {
+  const recentJobs = jobs.slice(0, 4);
+  return (
+    <div className="rounded-md border border-slate-200 p-2">
+      <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Export history</div>
+      {recentJobs.length ? (
+        <div className="space-y-2">
+          {recentJobs.map((job) => (
+            <div key={job.id} className="flex items-center justify-between gap-2 text-xs">
+              <span className="min-w-0 truncate text-slate-700">
+                {kindLabel(job.kind)} {exportJobFormat(job).toUpperCase()}
+              </span>
+              <span className={job.status === "completed" ? "text-emerald-700" : job.status === "failed" ? "text-red-600" : "text-slate-500"}>{job.status}</span>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="text-xs text-slate-500">No exports yet.</div>
+      )}
+    </div>
+  );
+}
+
 function Panel({ title, icon, children }: { title: string; icon: ReactNode; children: ReactNode }) {
   return (
     <div className="rounded-lg border border-slate-200 bg-white p-4">
@@ -1072,6 +1164,18 @@ function groupCounts(values: string[]): Record<string, number> {
     counts[value] = (counts[value] ?? 0) + 1;
     return counts;
   }, {});
+}
+
+function kindLabel(kind: string): string {
+  if (kind === "client-quotation") return "Client quotation";
+  if (kind === "internal-costing") return "Internal costing";
+  if (kind === "pi") return "PI";
+  return kind;
+}
+
+function exportJobFormat(job: ExportJob): string {
+  const input = job.input as { format?: unknown };
+  return typeof input.format === "string" ? input.format : "";
 }
 
 function stableProjectId(projectName: string, clientName: string): string {
