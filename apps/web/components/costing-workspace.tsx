@@ -818,94 +818,85 @@ export function CostingWorkspace({ initialView = "workspace", showCommandCenter 
 
   return (
     <section className="space-y-5">
-      <div className="surface overflow-hidden">
-        <div className="border-b border-slate-200 px-4 py-3 sm:px-5">
-          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-            <div>
-              <h2 className="text-base font-semibold text-ink">Command Center</h2>
-              <p className="mt-1 text-sm text-slate-500">{message}</p>
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1.35fr)_minmax(360px,0.65fr)]">
+        <div className="surface overflow-hidden">
+          <div className="border-b border-slate-200 px-4 py-4 sm:px-5">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+              <div>
+                <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">BOQ Workspace</div>
+                <h2 className="mt-1 text-2xl font-semibold tracking-tight text-ink">Upload, extract, cost</h2>
+                <p className="mt-1 max-w-2xl text-sm text-slate-500">{message}</p>
+              </div>
+              <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-medium text-slate-500">
+                {lastSaved ? `Autosaved ${new Date(lastSaved).toLocaleString("en-IN")}` : "Autosave ready"}
+              </div>
             </div>
-            <div className="text-xs font-medium text-slate-500">
-              {lastSaved ? `Autosaved ${new Date(lastSaved).toLocaleString("en-IN")}` : "Autosave ready"}
+          </div>
+
+          <div className="grid gap-5 p-4 sm:p-5 lg:grid-cols-[minmax(0,1fr)_320px]">
+            <div className="grid gap-4">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <TextInput label="Project" value={projectName} onChange={setProjectName} />
+                <TextInput label="Client" value={clientName} onChange={setClientName} />
+              </div>
+
+              <div className="grid gap-3 rounded-md border border-slate-200 bg-slate-50 p-3 sm:grid-cols-2">
+                <UploadButton label="Upload BOQ" busy={busy === "boq"} accept=".csv,.xlsx,.xls" onFile={uploadBoq} />
+                <UploadButton label="Extract BOQ PDF" busy={busy === "pdf"} accept=".pdf" onFile={uploadBoqPdf} />
+              </div>
+
+              <div className="grid gap-3 rounded-md border border-slate-200 bg-white p-3 lg:grid-cols-[1fr_auto_auto] lg:items-end">
+                <label className="grid gap-1 text-xs font-medium text-slate-600">
+                  Margin for costing
+                  <select value={globalMargin} onChange={(event) => setGlobalMargin(Number(event.target.value))} className="field">
+                    {[0, 20, 25, 30, 35, 40, 45, 50].map((margin) => (
+                      <option key={margin} value={margin}>
+                        {margin}%
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <button type="button" disabled={!items.length || busy === "margin"} onClick={applyGlobalMargin} className="btn-secondary disabled:text-slate-300">
+                  {busy === "margin" ? <Loader2 className="animate-spin" size={15} /> : <Percent size={15} />}
+                  Apply margin
+                </button>
+                <button type="button" disabled={!items.length || busy === "cost"} onClick={costAll} className="btn-primary disabled:border-slate-300 disabled:bg-slate-300 disabled:shadow-none">
+                  {busy === "cost" ? <Loader2 className="animate-spin" size={16} /> : <Calculator size={16} />}
+                  Cost BOQ
+                </button>
+              </div>
+            </div>
+
+            <div className="grid content-start gap-3">
+              <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-3 text-sm text-emerald-900">
+                <div className="font-semibold">Libraries ready</div>
+                <div className="mt-1 text-xs leading-5 text-emerald-800">Embedded training and RM rates are available automatically. Update them from their own tabs only when needed.</div>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <Stat label="BOQ rows" value={items.length} />
+                <Stat label="Costed" value={costed.length} />
+                <Stat label="Rates" value={imports.rates.length} />
+                <Stat label="Corpus" value={imports.corpus.length} />
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <button onClick={saveProject} className="btn-secondary">
+                  <Save size={15} />
+                  Archive
+                </button>
+                <button onClick={() => setActiveView("exports")} className="btn-secondary">
+                  <Download size={15} />
+                  Exports
+                </button>
+              </div>
             </div>
           </div>
         </div>
 
-        <div className="grid gap-4 p-4 sm:p-5 xl:grid-cols-[1.15fr_1fr_1fr_1.05fr]">
-          <div className="grid content-start gap-3">
-            <div className="flex items-center gap-2 text-sm font-semibold text-ink">
-              <Save size={17} />
-              Project
-            </div>
-            <TextInput label="Project" value={projectName} onChange={setProjectName} />
-            <TextInput label="Client" value={clientName} onChange={setClientName} />
-            <button onClick={saveProject} className="btn-primary">
-              <Save size={15} />
-              Save to archive
-            </button>
-          </div>
-
-          <div className="grid content-start gap-3">
-            <div className="flex items-center gap-2 text-sm font-semibold text-ink">
-              <Database size={17} />
-              Libraries
-            </div>
-            <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-medium text-emerald-800">
-              RM rates load automatically from the embedded raw material library.
-            </div>
-            <UploadButton label="Master Costing" busy={busy === "training"} accept=".xlsx,.xls" onFile={importTraining} />
-            <UploadButton label="Update RM Rates" busy={busy === "rates"} accept=".xlsx,.xls" onFile={importRates} />
-            <div className="grid grid-cols-4 gap-2">
-              <Stat label="Corpus" value={imports.corpus.length} />
-              <Stat label="Rates" value={imports.rates.length} />
-              <Stat label="Vendors" value={imports.vendors.length} />
-              <Stat label="Rows" value={imports.trainingRows + imports.rateRows} />
-            </div>
-          </div>
-
-          <div className="grid content-start gap-3">
-            <div className="flex items-center gap-2 text-sm font-semibold text-ink">
-              <FileUp size={17} />
-              BOQ
-            </div>
-            <UploadButton label="Upload BOQ" busy={busy === "boq"} accept=".csv,.xlsx,.xls" onFile={uploadBoq} />
-            <UploadButton label="Extract BOQ PDF" busy={busy === "pdf"} accept=".pdf" onFile={uploadBoqPdf} />
-            <div className="grid grid-cols-[1fr_auto] gap-2">
-              <label className="grid gap-1 text-xs font-medium text-slate-600">
-                Global margin
-                <select value={globalMargin} onChange={(event) => setGlobalMargin(Number(event.target.value))} className="field">
-                  {[0, 20, 25, 30, 35, 40, 45, 50].map((margin) => (
-                    <option key={margin} value={margin}>
-                      {margin}%
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <button type="button" disabled={!items.length || busy === "margin"} onClick={applyGlobalMargin} className="btn-secondary self-end disabled:text-slate-300">
-                {busy === "margin" ? <Loader2 className="animate-spin" size={15} /> : <Percent size={15} />}
-                Apply
-              </button>
-            </div>
-            <button type="button" disabled={!items.length || busy === "cost"} onClick={costAll} className="btn-primary disabled:border-slate-300 disabled:bg-slate-300 disabled:shadow-none">
-              {busy === "cost" ? <Loader2 className="animate-spin" size={16} /> : <Calculator size={16} />}
-              Cost all rows
-            </button>
-          </div>
-
-          <div className="grid content-start gap-3">
-            <div className="flex items-center gap-2 text-sm font-semibold text-ink">
-              <Download size={17} />
-              Exports
-            </div>
-            {exportControls}
-          </div>
+        <div className="grid gap-3">
+          <Metric label="Raw x Qty" value={totals.raw} />
+          <Metric label="Factory x Qty" value={totals.factory} />
+          <Metric label="Quotation Total" value={totals.sell} highlight />
         </div>
-      </div>
-
-      <div className="grid gap-3 md:grid-cols-3">
-        <Metric label="Raw x Qty" value={totals.raw} />
-        <Metric label="Factory x Qty" value={totals.factory} />
-        <Metric label="Quotation Total" value={totals.sell} highlight />
       </div>
 
       {tabs}
