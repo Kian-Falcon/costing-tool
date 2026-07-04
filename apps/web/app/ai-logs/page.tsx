@@ -25,7 +25,7 @@ export default async function AiLogsPage() {
       <section className="space-y-4">
         <div className="grid gap-3 sm:grid-cols-3">
           <Summary label="Requests" value={logs.length} />
-          <Summary label="Completed" value={logs.filter((log) => log.status === "completed").length} />
+          <Summary label="Succeeded" value={logs.filter((log) => log.status === "succeeded").length} />
           <Summary label="Cached" value={logs.filter((log) => log.cacheEntry).length} />
         </div>
         <div className="rounded-lg border border-slate-200 bg-white">

@@ -20,7 +20,8 @@
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
     "import:master": "tsx scripts/import-master-costing.ts",
-    "import:rates": "tsx scripts/import-rm-rates.ts"
+    "import:rates": "tsx scripts/import-rm-rates.ts",
+    "smoke:ai": "tsx scripts/smoke-ai-production.ts"
   },
   "devDependencies": {
     "@types/node": "^20.14.12",
