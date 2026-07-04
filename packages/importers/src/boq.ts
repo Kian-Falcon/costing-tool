@@ -9,10 +9,18 @@ export function parseBoqRows(rows: Record<string, unknown>[]): BoqItem[] {
     const code = pick(row, ["Code", "Sr", "Sr / code", "Item Code"]);
     const dims = pick(row, ["Dimensions", "Product Size (mm)", "Size"]);
     const spec = pick(row, ["Specification", "Original Specification", "Spec", "Material Specification"]);
-    const name = pick(row, ["Product Name", "Name", "Item", "Description", "Particulars"]) || nameFromSpec(spec) || code || `BOQ Item ${index + 1}`;
+    const pickedName = pick(row, ["Product Name", "Name", "Item", "Description", "Particulars"]);
+    const name = pickedName || nameFromSpec(spec) || code || `BOQ Item ${index + 1}`;
     const qty = numericValue(row, ["Qty", "QTY", "Quantity", "Nos"]);
 
-    if (isHeaderLike(code, name, dims, spec) || (!code && !dims && !spec && !qty)) return [];
+    if (
+      isHeaderLike(code, name, dims, spec) ||
+      isNonProductSkeletonRow(code, pickedName, dims, spec) ||
+      isCommercialOrSummaryRow(code, name, dims, spec) ||
+      (!code && !dims && !spec && !qty)
+    ) {
+      return [];
+    }
 
     return {
       id: cryptoSafeId(index),
@@ -82,6 +90,45 @@ function numericValue(row: Record<string, unknown>, keys: string[]): number {
 function isHeaderLike(code: string, name: string, dims: string, spec: string): boolean {
   const value = `${code} ${name} ${dims} ${spec}`.toLowerCase();
   return /^(code|product name|name|item|description|specification|size|qty|\s)+$/.test(value.trim());
+}
+
+function isNonProductSkeletonRow(code: string, name: string, dims: string, spec: string): boolean {
+  if (dims.trim() || spec.trim()) return false;
+
+  const normalizedName = name.trim().toLowerCase();
+  const normalizedCode = code.trim().toLowerCase();
+
+  return (
+    !normalizedName ||
+    /^[`'"’‘]+$/.test(normalizedName) ||
+    (Boolean(normalizedCode) && normalizedName === normalizedCode && /^[a-z]$/.test(normalizedCode))
+  );
+}
+
+function isCommercialOrSummaryRow(code: string, name: string, dims: string, spec: string): boolean {
+  const label = `${name} ${dims} ${spec}`.replace(/\s+/g, " ").trim().toLowerCase();
+  const normalizedCode = code.trim().toLowerCase();
+  const hasProductShape = Boolean(dims.trim()) || /^([a-z]{1,3}\d+|\d+)$/i.test(code.trim());
+  const commercialOnlyCode = !normalizedCode || /^[a-z]$/.test(normalizedCode) || /^[`'"’‘]+$/.test(normalizedCode);
+
+  if (hasProductShape && !commercialOnlyCode) return false;
+
+  return [
+    /\btransportation\b/,
+    /\bhandling charges?\b/,
+    /\binstallation charges?\b/,
+    /\btotal\b/,
+    /\bpackaging\b/,
+    /\ba\s*\+\s*b\b/,
+    /\bgst\b/,
+    /\bgrand total\b/,
+    /\bpayment terms?\b/,
+    /\btat\b/,
+    /\bwarranty\b/,
+    /\bfabric\b/,
+    /\bpenalty\b/,
+    /\bterms?\s*&?\s*conditions?\b/
+  ].some((pattern) => pattern.test(label));
 }
 
 function nameFromSpec(spec: string): string {
