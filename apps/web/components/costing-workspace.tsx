@@ -384,24 +384,33 @@ export function CostingWorkspace({ initialView = "workspace", showCommandCenter 
     }
   }
 
-  async function resetEmbeddedTraining() {
+  function resetEmbeddedTraining() {
     setBusy("training-reset");
+    setImports((current) => ({
+      ...current,
+      corpus: EMBEDDED_CORPUS_PRODUCTS,
+      trainingRows: EMBEDDED_TRAINING_LIBRARY_META.rowsRead,
+      trainingSourceStats: EMBEDDED_TRAINING_STATS
+    }));
+    setCosted([]);
+    setMessage(`Restored ${EMBEDDED_CORPUS_PRODUCTS.length} embedded training products locally. Syncing Supabase in the background.`);
+    setBusy(null);
+    void syncEmbeddedTraining();
+  }
+
+  async function syncEmbeddedTraining() {
     try {
-      const response = await fetch("/api/training-sources/reset", { method: "POST" });
-      const body = (await response.json()) as { products?: CorpusProduct[]; count?: number; error?: string; meta?: { embeddedSourceStats?: TrainingSourceStat[]; embeddedRowsRead?: number } };
-      if (!response.ok || !body.products) throw new Error(body.error ?? "Could not reset embedded training data.");
+      const body = await fetchJsonWithTimeout<{ products?: CorpusProduct[]; count?: number; error?: string; meta?: { embeddedSourceStats?: TrainingSourceStat[]; embeddedRowsRead?: number } }>("/api/training-sources/reset", { method: "POST" }, 20000);
+      if (!body.products) throw new Error(body.error ?? "Could not sync embedded training data.");
       setImports((current) => ({
         ...current,
-        corpus: body.products ?? current.corpus,
-        trainingRows: body.meta?.embeddedRowsRead ?? body.count ?? body.products?.length ?? current.trainingRows,
+        corpus: body.products?.length ? body.products : current.corpus,
+        trainingRows: body.meta?.embeddedRowsRead ?? current.trainingRows,
         trainingSourceStats: body.meta?.embeddedSourceStats ?? current.trainingSourceStats
       }));
-      setCosted([]);
-      setMessage(`Restored ${body.count ?? body.products.length} embedded training products. Run Cost all rows again.`);
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Could not reset embedded training data.");
-    } finally {
-      setBusy(null);
+      setMessage(`Supabase training library synced with ${body.count ?? body.products.length} embedded products.`);
+    } catch {
+      setMessage("Embedded training is ready locally. Supabase sync is still slow or unavailable; try Reset embedded again later.");
     }
   }
 
@@ -1575,6 +1584,19 @@ async function postFile<T>(url: string, file: File): Promise<T> {
   const response = await fetch(url, { method: "POST", body });
   if (!response.ok) throw new Error(await response.text());
   return (await response.json()) as T;
+}
+
+async function fetchJsonWithTimeout<T>(url: string, init: RequestInit, timeoutMs: number): Promise<T> {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { ...init, signal: controller.signal });
+    const body = (await response.json()) as T & { error?: string };
+    if (!response.ok) throw new Error(body.error ?? "Request failed.");
+    return body;
+  } finally {
+    window.clearTimeout(timeout);
+  }
 }
 
 function buildSnapshot(input: {
