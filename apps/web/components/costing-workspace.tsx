@@ -528,11 +528,11 @@ export function CostingWorkspace({ initialView = "workspace" }: { initialView?: 
       <ExportButtonRow title="Internal costing" disabled={!costed.length} busy={busy} kind="internal-costing" formats={["csv", "xlsx", "pdf"]} onExport={exportFile} />
       <ExportButtonRow title="PI" disabled={!costed.length} busy={busy} kind="pi" formats={["xlsx", "pdf"]} onExport={exportFile} />
       <ExportHistory jobs={exportJobs} />
-      <button onClick={exportSnapshot} className="rounded-md border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50">
+      <button onClick={exportSnapshot} className="btn-secondary">
         Save snapshot
       </button>
       <UploadButton label="Load snapshot" busy={busy === "snapshot"} accept=".json" onFile={importSnapshot} />
-      <button onClick={clearSavedWorkspace} className="flex items-center justify-center gap-2 rounded-md border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50">
+      <button onClick={clearSavedWorkspace} className="btn-secondary">
         <Trash2 size={15} />
         Clear saved workspace
       </button>
@@ -540,81 +540,100 @@ export function CostingWorkspace({ initialView = "workspace" }: { initialView?: 
   );
 
   return (
-    <section className="grid gap-6 xl:grid-cols-[340px_1fr]">
-      <aside className="space-y-4">
-        <Panel title="Project" icon={<Save size={18} />}>
-          <div className="grid gap-2">
+    <section className="space-y-5">
+      <div className="surface overflow-hidden">
+        <div className="border-b border-slate-200 px-4 py-3 sm:px-5">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <h2 className="text-base font-semibold text-ink">Command Center</h2>
+              <p className="mt-1 text-sm text-slate-500">{message}</p>
+            </div>
+            <div className="text-xs font-medium text-slate-500">
+              {lastSaved ? `Autosaved ${new Date(lastSaved).toLocaleString("en-IN")}` : "Autosave ready"}
+            </div>
+          </div>
+        </div>
+
+        <div className="grid gap-4 p-4 sm:p-5 xl:grid-cols-[1.15fr_1fr_1fr_1.05fr]">
+          <div className="grid content-start gap-3">
+            <div className="flex items-center gap-2 text-sm font-semibold text-ink">
+              <Save size={17} />
+              Project
+            </div>
             <TextInput label="Project" value={projectName} onChange={setProjectName} />
             <TextInput label="Client" value={clientName} onChange={setClientName} />
-            <button onClick={saveProject} className="rounded-md bg-moss px-3 py-2 text-sm font-semibold text-white">
+            <button onClick={saveProject} className="btn-primary">
+              <Save size={15} />
               Save to archive
             </button>
           </div>
-          <div className="mt-3 rounded-md bg-slate-50 p-3 text-xs text-slate-500">
-            {lastSaved ? `Autosaved ${new Date(lastSaved).toLocaleString("en-IN")}` : "Autosave ready"}
-          </div>
-        </Panel>
 
-        <Panel title="Data Imports" icon={<Database size={18} />}>
-          <UploadButton label="Master Costing" busy={busy === "training"} accept=".xlsx,.xls" onFile={importTraining} />
-          <UploadButton label="RM Rates" busy={busy === "rates"} accept=".xlsx,.xls" onFile={importRates} />
-          <div className="mt-4 grid grid-cols-2 gap-2 text-sm">
-            <Stat label="Corpus" value={imports.corpus.length} />
-            <Stat label="Rates" value={imports.rates.length} />
-            <Stat label="Vendors" value={imports.vendors.length} />
-            <Stat label="Rows" value={imports.trainingRows + imports.rateRows} />
+          <div className="grid content-start gap-3">
+            <div className="flex items-center gap-2 text-sm font-semibold text-ink">
+              <Database size={17} />
+              Libraries
+            </div>
+            <UploadButton label="Master Costing" busy={busy === "training"} accept=".xlsx,.xls" onFile={importTraining} />
+            <UploadButton label="RM Rates" busy={busy === "rates"} accept=".xlsx,.xls" onFile={importRates} />
+            <div className="grid grid-cols-4 gap-2">
+              <Stat label="Corpus" value={imports.corpus.length} />
+              <Stat label="Rates" value={imports.rates.length} />
+              <Stat label="Vendors" value={imports.vendors.length} />
+              <Stat label="Rows" value={imports.trainingRows + imports.rateRows} />
+            </div>
           </div>
-        </Panel>
 
-        <Panel title="BOQ Workflow" icon={<FileUp size={18} />}>
-          <UploadButton label="Upload BOQ" busy={busy === "boq"} accept=".csv,.xlsx,.xls" onFile={uploadBoq} />
-          <UploadButton label="Extract BOQ PDF" busy={busy === "pdf"} accept=".pdf" onFile={uploadBoqPdf} />
+          <div className="grid content-start gap-3">
+            <div className="flex items-center gap-2 text-sm font-semibold text-ink">
+              <FileUp size={17} />
+              BOQ
+            </div>
+            <UploadButton label="Upload BOQ" busy={busy === "boq"} accept=".csv,.xlsx,.xls" onFile={uploadBoq} />
+            <UploadButton label="Extract BOQ PDF" busy={busy === "pdf"} accept=".pdf" onFile={uploadBoqPdf} />
+            <button type="button" disabled={!items.length || busy === "cost"} onClick={costAll} className="btn-primary disabled:border-slate-300 disabled:bg-slate-300 disabled:shadow-none">
+              {busy === "cost" ? <Loader2 className="animate-spin" size={16} /> : <Calculator size={16} />}
+              Cost all rows
+            </button>
+          </div>
+
+          <div className="grid content-start gap-3">
+            <div className="flex items-center gap-2 text-sm font-semibold text-ink">
+              <Download size={17} />
+              Exports
+            </div>
+            {exportControls}
+          </div>
+        </div>
+      </div>
+
+      <div className="grid gap-3 md:grid-cols-3">
+        <Metric label="Raw x Qty" value={totals.raw} />
+        <Metric label="Factory x Qty" value={totals.factory} />
+        <Metric label="Quotation Total" value={totals.sell} highlight />
+      </div>
+
+      <div className="surface flex gap-1 overflow-x-auto p-1.5">
+        {[
+          ["workspace", "Workspace"],
+          ["projects", "Projects"],
+          ["rates", "Rates"],
+          ["vendors", "Vendors"],
+          ["training", "Training"],
+          ["models", "Models"],
+          ["exports", "Exports"],
+          ["editor", "Row Editor"]
+        ].map(([key, label]) => (
           <button
-            type="button"
-            disabled={!items.length || busy === "cost"}
-            onClick={costAll}
-            className="mt-3 flex w-full items-center justify-center gap-2 rounded-md bg-moss px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
+            key={key}
+            onClick={() => setActiveView(key as ActiveView)}
+            className={`shrink-0 rounded-md px-3 py-2 text-sm font-semibold ${activeView === key ? "bg-ink text-white shadow-sm" : "text-slate-600 hover:bg-slate-100 hover:text-ink"}`}
           >
-            {busy === "cost" ? <Loader2 className="animate-spin" size={16} /> : <Calculator size={16} />}
-            Cost all rows
+            {label}
           </button>
-          <div className="mt-3 rounded-md bg-slate-50 p-3 text-sm text-slate-600">{message}</div>
-        </Panel>
-
-        <Panel title="Exports" icon={<Download size={18} />}>
-          {exportControls}
-        </Panel>
-      </aside>
+        ))}
+      </div>
 
       <div className="space-y-4">
-        <div className="grid gap-3 sm:grid-cols-3">
-          <Metric label="Raw x Qty" value={totals.raw} />
-          <Metric label="Factory x Qty" value={totals.factory} />
-          <Metric label="Quotation Total" value={totals.sell} />
-        </div>
-
-        <div className="rounded-lg border border-slate-200 bg-white p-2">
-          <div className="flex flex-wrap gap-1">
-            {[
-              ["workspace", "Workspace"],
-              ["projects", "Projects"],
-              ["rates", "Rates"],
-              ["vendors", "Vendors"],
-              ["training", "Training"],
-              ["models", "Models"],
-              ["exports", "Exports"],
-              ["editor", "Row Editor"]
-            ].map(([key, label]) => (
-              <button
-                key={key}
-                onClick={() => setActiveView(key as ActiveView)}
-                className={`rounded-md px-3 py-2 text-sm font-medium ${activeView === key ? "bg-moss text-white" : "text-slate-700 hover:bg-slate-100"}`}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-        </div>
 
         {activeView === "workspace" && (
           <WorkspaceTable
@@ -680,38 +699,38 @@ function WorkspaceTable({
 }) {
   const rows = costed.length ? costed : items.map((item) => ({ item, result: undefined }));
   return (
-    <div className="rounded-lg border border-slate-200 bg-white">
+    <div className="surface overflow-hidden">
       <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
         <div>
-          <h2 className="font-semibold text-ink">Costed BOQ</h2>
-          <p className="text-sm text-slate-600">{costed.length ? `${costed.length} priced rows` : `${items.length} loaded rows waiting for costing`}</p>
+          <h2 className="text-base font-semibold text-ink">Costed BOQ</h2>
+          <p className="mt-1 text-sm text-slate-500">{costed.length ? `${costed.length} priced rows` : `${items.length} loaded rows waiting for costing`}</p>
         </div>
-        <button title="Save snapshot" onClick={onSave} className="rounded-md border border-slate-300 p-2 text-slate-700 hover:bg-slate-100">
+        <button title="Save snapshot" onClick={onSave} className="btn-secondary min-h-0 p-2">
           <Save size={17} />
         </button>
       </div>
       <div className="overflow-x-auto">
         <table className="w-full min-w-[980px] text-left text-sm">
-          <thead className="bg-slate-50 text-slate-600">
+          <thead className="table-head">
             <tr>
-              <th className="px-5 py-3 font-medium">Code</th>
-              <th className="px-5 py-3 font-medium">Product</th>
-              <th className="px-5 py-3 font-medium">Dims</th>
-              <th className="px-5 py-3 font-medium">Qty</th>
-              <th className="px-5 py-3 font-medium">Factory</th>
-              <th className="px-5 py-3 font-medium">Sell</th>
-              <th className="px-5 py-3 font-medium">Match</th>
-              <th className="px-5 py-3 font-medium">Action</th>
+              <th className="px-5 py-3 font-semibold">Code</th>
+              <th className="px-5 py-3 font-semibold">Product</th>
+              <th className="px-5 py-3 font-semibold">Dims</th>
+              <th className="px-5 py-3 font-semibold">Qty</th>
+              <th className="px-5 py-3 font-semibold">Factory</th>
+              <th className="px-5 py-3 font-semibold">Sell</th>
+              <th className="px-5 py-3 font-semibold">Match</th>
+              <th className="px-5 py-3 font-semibold">Action</th>
             </tr>
           </thead>
           <tbody>
             {rows.map((row) => (
-              <tr key={row.item.id} className={`border-t border-slate-100 align-top ${row.item.id === selectedItemId ? "bg-[#f2f6f4]" : ""}`}>
+              <tr key={row.item.id} className={`border-t border-slate-100 align-top hover:bg-slate-50/70 ${row.item.id === selectedItemId ? "bg-emerald-50" : ""}`}>
                 <td className="px-5 py-3 text-slate-600">{row.item.code ?? ""}</td>
                 <td className="px-5 py-3 text-ink">
                   <div className="font-medium">{row.item.name}</div>
                   <div className="mt-1 max-w-xl text-xs text-slate-500">{row.item.spec}</div>
-                  {row.result && row.result.confidence < 0.55 ? <div className="mt-1 text-xs font-medium text-copper">Low confidence</div> : null}
+                  {row.result && row.result.confidence < 0.55 ? <div className="mt-2 inline-flex rounded-full bg-amber-50 px-2 py-1 text-xs font-semibold text-copper">Low confidence</div> : null}
                 </td>
                 <td className="px-5 py-3 text-slate-600">{row.item.dims}</td>
                 <td className="px-5 py-3 text-slate-600">{row.item.qty}</td>
@@ -719,7 +738,7 @@ function WorkspaceTable({
                 <td className="px-5 py-3 font-medium text-ink">{row.result ? format(row.result.sell) : "-"}</td>
                 <td className="px-5 py-3 text-slate-600">{row.result ? row.result.matchLabel : "-"}</td>
                 <td className="px-5 py-3">
-                  <button onClick={() => onSelect(row.item.id)} className="rounded-md border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50">
+                  <button onClick={() => onSelect(row.item.id)} className="btn-secondary min-h-0 px-3 py-1.5 text-xs">
                     Edit
                   </button>
                 </td>
@@ -836,16 +855,16 @@ function RowEditor({
         <button
           disabled={busy}
           onClick={() => onRecost(item)}
-          className="mt-4 flex items-center justify-center gap-2 rounded-md bg-moss px-4 py-2 text-sm font-semibold text-white disabled:bg-slate-300"
+          className="btn-primary mt-4 disabled:border-slate-300 disabled:bg-slate-300 disabled:shadow-none"
         >
           {busy ? <Loader2 className="animate-spin" size={16} /> : <Calculator size={16} />}
           Re-cost row
         </button>
         <div className="mt-3 grid gap-2 sm:grid-cols-2">
-          <button disabled={aiBusy} onClick={() => onAiCost(item, "openai")} className="rounded-md border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 disabled:text-slate-300">
+          <button disabled={aiBusy} onClick={() => onAiCost(item, "openai")} className="btn-secondary disabled:text-slate-300">
             OpenAI cost
           </button>
-          <button disabled={aiBusy} onClick={() => onAiCost(item, "anthropic")} className="rounded-md border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 disabled:text-slate-300">
+          <button disabled={aiBusy} onClick={() => onAiCost(item, "anthropic")} className="btn-secondary disabled:text-slate-300">
             Claude cost
           </button>
         </div>
@@ -856,11 +875,11 @@ function RowEditor({
           <div className="space-y-2">
             <Metric label="Factory" value={costed.result.factory} />
             <Metric label="Sell" value={costed.result.sell} />
-            <div className="rounded-md bg-slate-50 p-3 text-xs text-slate-600">
+            <div className="rounded-md border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
               Baseline raw {format(baselineRaw)} | Current raw {format(costed.result.raw)} | Variance{" "}
               <span className={Math.abs(variance) > 15 ? "font-semibold text-copper" : "font-semibold text-emerald-700"}>{variance.toFixed(1)}%</span>
             </div>
-            <button type="button" onClick={addMaterial} className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50">
+            <button type="button" onClick={addMaterial} className="btn-secondary w-full">
               Add material row
             </button>
             <div className="max-h-[520px] overflow-auto rounded-md border border-slate-200">
@@ -879,7 +898,7 @@ function RowEditor({
           {reviewRows.length ? (
             <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
               {reviewRows.map((row) => (
-                <button key={row.item.id} type="button" onClick={() => onSelect(row.item.id)} className="rounded-md border border-slate-200 p-3 text-left hover:bg-slate-50">
+                <button key={row.item.id} type="button" onClick={() => onSelect(row.item.id)} className="rounded-md border border-slate-200 bg-white p-3 text-left hover:border-slate-300 hover:bg-slate-50">
                   <div className="truncate text-sm font-medium text-ink">{row.item.name}</div>
                   <div className="mt-1 text-xs text-slate-500">{row.result.matchLabel}</div>
                   <div className="mt-2 text-xs font-semibold text-copper">Confidence {(row.result.confidence * 100).toFixed(0)}%</div>
@@ -925,7 +944,7 @@ function MaterialEditorRow({
               <span className={Math.abs(row.variancePct) > 15 ? "font-semibold text-copper" : "font-semibold text-emerald-700"}>{row.variancePct.toFixed(1)}%</span>
             </div>
           </div>
-          <button type="button" onClick={onRemove} className="rounded-md border border-slate-300 px-2 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50">
+          <button type="button" onClick={onRemove} className="btn-secondary min-h-0 px-2 py-1 text-xs">
             Remove
           </button>
         </div>
@@ -937,7 +956,7 @@ function MaterialEditorRow({
               const rate = rates.find((item) => item.key === event.target.value);
               onUpdate({ materialKey: event.target.value, label: rate?.label ?? event.target.value, unit: rate?.unit ?? row.unit, rate: rate?.rate ?? row.rate });
             }}
-            className="rounded-md border border-slate-300 bg-white px-2 py-2 text-xs font-normal text-ink"
+            className="field px-2 py-2 text-xs font-normal"
           >
             <option value={row.materialKey}>{row.materialKey}</option>
             {rates
@@ -956,7 +975,7 @@ function MaterialEditorRow({
           <TextInput label="Unit" value={row.unit} onChange={(value) => onUpdate({ unit: value })} />
           <label className="grid gap-1 text-xs font-medium text-slate-600">
             Type
-            <select value={row.source} onChange={(event) => onUpdate({ source: event.target.value as MaterialBreakdownLine["source"] })} className="rounded-md border border-slate-300 bg-white px-2 py-2 text-xs font-normal text-ink">
+            <select value={row.source} onChange={(event) => onUpdate({ source: event.target.value as MaterialBreakdownLine["source"] })} className="field px-2 py-2 text-xs font-normal">
               {["estimate", "override", "ai", "added", "spec", "fixed", "geometry", "dataset", "seed", "model", "user"].map((source) => (
                 <option key={source} value={source}>
                   {source}
@@ -965,7 +984,7 @@ function MaterialEditorRow({
             </select>
           </label>
         </div>
-        <div className="rounded-md bg-slate-50 p-2 text-right text-sm font-semibold text-ink">{format(row.amount)}</div>
+        <div className="rounded-md border border-slate-200 bg-slate-50 p-2 text-right text-sm font-semibold text-ink">{format(row.amount)}</div>
       </div>
     </div>
   );
@@ -985,13 +1004,13 @@ function ProjectArchiveView({
   return (
     <Panel title="Project Archive" icon={<Save size={18} />}>
       <div className="mb-3 flex justify-end">
-        <button disabled={!projects.length} onClick={onExportAll} className="rounded-md border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 disabled:text-slate-300">
+        <button disabled={!projects.length} onClick={onExportAll} className="btn-secondary disabled:text-slate-300">
           Export all projects
         </button>
       </div>
       <div className="grid gap-2">
         {projects.length ? projects.map((project) => (
-          <div key={project.id} className="rounded-md border border-slate-200 p-3">
+          <div key={project.id} className="rounded-md border border-slate-200 bg-white p-3 hover:border-slate-300">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
                 <div className="font-semibold text-ink">{project.name}</div>
@@ -999,8 +1018,8 @@ function ProjectArchiveView({
                 <div className="text-xs text-slate-500">{new Date(project.savedAt).toLocaleString("en-IN")}</div>
               </div>
               <div className="flex gap-2">
-                <button onClick={() => onLoad(project)} className="rounded-md bg-moss px-3 py-1.5 text-xs font-semibold text-white">Load</button>
-                <button onClick={() => onDelete(project.id)} className="rounded-md border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700">Delete</button>
+                <button onClick={() => onLoad(project)} className="btn-primary min-h-0 px-3 py-1.5 text-xs">Load</button>
+                <button onClick={() => onDelete(project.id)} className="btn-secondary min-h-0 px-3 py-1.5 text-xs">Delete</button>
               </div>
             </div>
           </div>
@@ -1029,12 +1048,12 @@ function RateLibrary({
   return (
     <Panel title="Rate Library" icon={<Library size={18} />}>
       <div className="mb-3 grid gap-2 md:grid-cols-[1fr_auto]">
-        <input value={search} onChange={(event) => onSearch(event.target.value)} placeholder="Search rates" className="rounded-md border border-slate-300 px-3 py-2 text-sm" />
-        <button onClick={onAdd} className="rounded-md bg-moss px-3 py-2 text-sm font-semibold text-white">Add rate</button>
+        <input value={search} onChange={(event) => onSearch(event.target.value)} placeholder="Search rates" className="field" />
+        <button onClick={onAdd} className="btn-primary">Add rate</button>
       </div>
       <div className="overflow-x-auto">
         <table className="w-full min-w-[760px] text-left text-sm">
-          <thead className="bg-slate-50 text-slate-600">
+          <thead className="table-head">
             <tr>
               <th className="px-3 py-2 font-medium">Key</th>
               <th className="px-3 py-2 font-medium">Label</th>
@@ -1046,13 +1065,13 @@ function RateLibrary({
           </thead>
           <tbody>
             {filtered.map((rate) => (
-              <tr key={rate.key} className="border-t border-slate-100">
+              <tr key={rate.key} className="border-t border-slate-100 hover:bg-slate-50/70">
                 <td className="px-3 py-2 text-xs text-slate-500">{rate.key}</td>
-                <td className="px-3 py-2"><input value={rate.label} onChange={(event) => onUpdate(rate.key, { label: event.target.value })} className="w-full rounded-md border border-slate-200 px-2 py-1" /></td>
-                <td className="px-3 py-2"><input value={rate.category} onChange={(event) => onUpdate(rate.key, { category: event.target.value })} className="w-full rounded-md border border-slate-200 px-2 py-1" /></td>
-                <td className="px-3 py-2"><input value={rate.unit} onChange={(event) => onUpdate(rate.key, { unit: event.target.value })} className="w-24 rounded-md border border-slate-200 px-2 py-1" /></td>
-                <td className="px-3 py-2"><input type="number" value={rate.rate} onChange={(event) => onUpdate(rate.key, { rate: Number(event.target.value) })} className="w-28 rounded-md border border-slate-200 px-2 py-1" /></td>
-                <td className="px-3 py-2"><button onClick={() => onRemove(rate.key)} className="rounded-md border border-slate-300 px-2 py-1 text-xs text-slate-700">Remove</button></td>
+                <td className="px-3 py-2"><input value={rate.label} onChange={(event) => onUpdate(rate.key, { label: event.target.value })} className="field px-2 py-1" /></td>
+                <td className="px-3 py-2"><input value={rate.category} onChange={(event) => onUpdate(rate.key, { category: event.target.value })} className="field px-2 py-1" /></td>
+                <td className="px-3 py-2"><input value={rate.unit} onChange={(event) => onUpdate(rate.key, { unit: event.target.value })} className="field w-24 px-2 py-1" /></td>
+                <td className="px-3 py-2"><input type="number" value={rate.rate} onChange={(event) => onUpdate(rate.key, { rate: Number(event.target.value) })} className="field w-28 px-2 py-1" /></td>
+                <td className="px-3 py-2"><button onClick={() => onRemove(rate.key)} className="btn-secondary min-h-0 px-2 py-1 text-xs">Remove</button></td>
               </tr>
             ))}
           </tbody>
@@ -1066,10 +1085,10 @@ function VendorDirectory({ vendors, search, onSearch }: { vendors: VendorLink[];
   const filtered = vendors.filter((vendor) => `${vendor.name} ${vendor.materialName} ${vendor.rateKey}`.toLowerCase().includes(search.toLowerCase()));
   return (
     <Panel title="Vendor Directory" icon={<Database size={18} />}>
-      <input value={search} onChange={(event) => onSearch(event.target.value)} placeholder="Search vendors" className="mb-3 w-full rounded-md border border-slate-300 px-3 py-2 text-sm" />
+      <input value={search} onChange={(event) => onSearch(event.target.value)} placeholder="Search vendors" className="field mb-3" />
       <div className="grid gap-2">
         {filtered.length ? filtered.slice(0, 200).map((vendor, index) => (
-          <div key={`${vendor.name}:${vendor.materialName}:${index}`} className="rounded-md border border-slate-200 p-3">
+          <div key={`${vendor.name}:${vendor.materialName}:${index}`} className="rounded-md border border-slate-200 bg-white p-3 hover:border-slate-300">
             <div className="font-medium text-ink">{vendor.name}</div>
             <div className="text-sm text-slate-600">{vendor.materialName}</div>
             <div className="text-xs text-slate-500">{vendor.rateKey}</div>
@@ -1093,7 +1112,7 @@ function TrainingDataView({ imports }: { imports: ImportState }) {
       </div>
       <div className="mt-4 grid gap-2 md:grid-cols-2">
         {Object.entries(byType).map(([type, count]) => (
-          <div key={type} className="flex items-center justify-between rounded-md border border-slate-200 px-3 py-2 text-sm">
+          <div key={type} className="flex items-center justify-between rounded-md border border-slate-200 bg-white px-3 py-2 text-sm">
             <span className="font-medium text-ink">{type}</span>
             <span className="text-slate-600">{count}</span>
           </div>
@@ -1114,7 +1133,7 @@ function ModelView({ models, ratioNorms }: { models: TrainedModel[]; ratioNorms:
         </div>
         <div className="mt-4 overflow-x-auto">
           <table className="w-full min-w-[720px] text-left text-sm">
-            <thead className="bg-slate-50 text-slate-600">
+            <thead className="table-head">
               <tr>
                 <th className="px-3 py-2 font-medium">Bucket</th>
                 <th className="px-3 py-2 font-medium">Predictor</th>
@@ -1126,7 +1145,7 @@ function ModelView({ models, ratioNorms }: { models: TrainedModel[]; ratioNorms:
             </thead>
             <tbody>
               {models.map((model) => (
-                <tr key={model.key} className="border-t border-slate-100">
+                <tr key={model.key} className="border-t border-slate-100 hover:bg-slate-50/70">
                   <td className="px-3 py-2 text-slate-700">{model.key}</td>
                   <td className="px-3 py-2 text-slate-600">{model.predictor}</td>
                   <td className="px-3 py-2 text-slate-600">{model.samples}</td>
@@ -1207,9 +1226,9 @@ function ExportHistory({ jobs }: { jobs: ExportJob[] }) {
 
 function Panel({ title, icon, children }: { title: string; icon: ReactNode; children: ReactNode }) {
   return (
-    <div className="rounded-lg border border-slate-200 bg-white p-4">
-      <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-ink">
-        {icon}
+    <div className="surface p-4">
+      <div className="mb-4 flex items-center gap-2 text-sm font-semibold text-ink">
+        <span className="flex h-8 w-8 items-center justify-center rounded-md bg-slate-100 text-slate-700">{icon}</span>
         {title}
       </div>
       {children}
@@ -1219,7 +1238,7 @@ function Panel({ title, icon, children }: { title: string; icon: ReactNode; chil
 
 function UploadButton({ label, accept, busy, onFile }: { label: string; accept: string; busy: boolean; onFile: (file: File) => void }) {
   return (
-    <label className="mt-2 flex cursor-pointer items-center justify-between rounded-md border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50">
+    <label className="flex min-h-10 cursor-pointer items-center justify-between rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:border-slate-400 hover:bg-slate-50">
       <span className="flex items-center gap-2">
         {busy ? <Loader2 className="animate-spin" size={16} /> : <UploadCloud size={16} />}
         {label}
@@ -1234,7 +1253,7 @@ function TextInput({ label, value, onChange }: { label: string; value: string; o
   return (
     <label className="grid gap-1 text-xs font-medium text-slate-600">
       {label}
-      <input value={value} onChange={(event) => onChange(event.target.value)} className="rounded-md border border-slate-300 px-3 py-2 text-sm font-normal text-ink" />
+      <input value={value} onChange={(event) => onChange(event.target.value)} className="field font-normal" />
     </label>
   );
 }
@@ -1243,7 +1262,7 @@ function NumberInput({ label, value, onChange }: { label: string; value: number;
   return (
     <label className="grid gap-1 text-xs font-medium text-slate-600">
       {label}
-      <input type="number" value={value} onChange={(event) => onChange(Number(event.target.value))} className="rounded-md border border-slate-300 px-3 py-2 text-sm font-normal text-ink" />
+      <input type="number" value={value} onChange={(event) => onChange(Number(event.target.value))} className="field font-normal" />
     </label>
   );
 }
@@ -1252,32 +1271,32 @@ function TextArea({ label, value, onChange }: { label: string; value: string; on
   return (
     <label className="grid gap-1 text-xs font-medium text-slate-600">
       {label}
-      <textarea value={value} onChange={(event) => onChange(event.target.value)} rows={3} className="rounded-md border border-slate-300 px-3 py-2 text-sm font-normal text-ink" />
+      <textarea value={value} onChange={(event) => onChange(event.target.value)} rows={3} className="field font-normal" />
     </label>
   );
 }
 
 function Stat({ label, value }: { label: string; value: number }) {
   return (
-    <div className="rounded-md bg-slate-50 p-2">
-      <div className="font-semibold text-ink">{value.toLocaleString("en-IN")}</div>
-      <div className="text-xs text-slate-500">{label}</div>
+    <div className="rounded-md border border-slate-200 bg-slate-50 px-2 py-2">
+      <div className="text-sm font-semibold text-ink">{value.toLocaleString("en-IN")}</div>
+      <div className="truncate text-[11px] text-slate-500">{label}</div>
     </div>
   );
 }
 
-function Metric({ label, value }: { label: string; value: number }) {
+function Metric({ label, value, highlight = false }: { label: string; value: number; highlight?: boolean }) {
   return (
-    <div className="rounded-lg border border-slate-200 bg-white p-4">
-      <div className="text-xs font-medium uppercase tracking-wide text-slate-500">{label}</div>
-      <div className="mt-1 text-xl font-semibold text-ink">{format(value)}</div>
+    <div className={`surface p-4 ${highlight ? "border-ink bg-ink text-white" : ""}`}>
+      <div className={`text-xs font-semibold uppercase tracking-wide ${highlight ? "text-slate-300" : "text-slate-500"}`}>{label}</div>
+      <div className={`mt-1 text-2xl font-semibold tracking-tight ${highlight ? "text-white" : "text-ink"}`}>{format(value)}</div>
     </div>
   );
 }
 
 function EmptyState({ title, text }: { title: string; text: string }) {
   return (
-    <div className="rounded-md bg-slate-50 p-5 text-center">
+    <div className="rounded-md border border-dashed border-slate-300 bg-slate-50 p-8 text-center">
       <div className="font-medium text-ink">{title}</div>
       <div className="mt-1 text-sm text-slate-500">{text}</div>
     </div>
