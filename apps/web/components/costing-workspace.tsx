@@ -223,8 +223,9 @@ export function CostingWorkspace({ initialView = "workspace", showCommandCenter 
   }
 
   function applyLoadedBoq(file: File, loadedItems: BoqItem[]) {
-    setItems(loadedItems);
-    setSelectedItemId(loadedItems[0]?.id ?? null);
+    const cleanItems = sanitizeBoqItems(loadedItems);
+    setItems(cleanItems);
+    setSelectedItemId(cleanItems[0]?.id ?? null);
     setCosted([]);
     setProjectName(file.name.replace(/\.[^.]+$/, ""));
   }
@@ -233,7 +234,7 @@ export function CostingWorkspace({ initialView = "workspace", showCommandCenter 
     setBusy("pdf");
     try {
       const result = await postFile<{ items?: BoqItem[]; fallbackItems?: BoqItem[]; warning?: string; error?: string }>("/api/ai/extract-boq-pdf", file);
-      const extracted = result.items ?? result.fallbackItems ?? [];
+      const extracted = sanitizeBoqItems(result.items ?? result.fallbackItems ?? []);
       setItems(extracted);
       setSelectedItemId(extracted[0]?.id ?? null);
       setCosted([]);
@@ -267,7 +268,12 @@ export function CostingWorkspace({ initialView = "workspace", showCommandCenter 
 
   async function costAll() {
     setBusy("cost");
-    const result = await costItems(items);
+    const cleanItems = sanitizeBoqItems(items);
+    if (cleanItems.length !== items.length) {
+      setItems(cleanItems);
+      setSelectedItemId(cleanItems[0]?.id ?? null);
+    }
+    const result = await costItems(cleanItems);
     setCosted(result.items);
     setMessage(`Costed ${result.items.length} rows using ${result.meta.modelCount} models and ${result.meta.ratioNormCount} ratio norms.`);
     setBusy(null);
@@ -684,12 +690,15 @@ export function CostingWorkspace({ initialView = "workspace", showCommandCenter 
   }
 
   function restoreSnapshot(snapshot: WorkspaceSnapshot) {
+    const cleanItems = sanitizeBoqItems(snapshot.items);
+    const cleanItemIds = new Set(cleanItems.map((item) => item.id));
+    const cleanCosted = snapshot.costed.filter((row) => cleanItemIds.has(row.item.id) && !isCommercialBoqItem(row.item));
     setProjectName(snapshot.projectName);
     setClientName(snapshot.clientName);
     setImports(snapshot.imports);
-    setItems(snapshot.items);
-    setCosted(snapshot.costed);
-    setSelectedItemId(snapshot.items[0]?.id ?? null);
+    setItems(cleanItems);
+    setCosted(cleanCosted);
+    setSelectedItemId(cleanItems[0]?.id ?? null);
     setMessage(snapshot.message || "Restored saved workspace.");
     setLastSaved(snapshot.savedAt);
   }
@@ -1646,6 +1655,8 @@ function normalizeSnapshot(raw: unknown): WorkspaceSnapshot {
   const input = raw as Partial<WorkspaceSnapshot> & { version?: number; imports?: Partial<ImportState> & { vendors?: VendorLink[] | number } };
   if (!input.imports || !Array.isArray(input.items) || !Array.isArray(input.costed)) throw new Error("Invalid snapshot file.");
   const vendors = Array.isArray(input.imports.vendors) ? input.imports.vendors : [];
+  const items = sanitizeBoqItems(input.items);
+  const itemIds = new Set(items.map((item) => item.id));
   return {
     version: 2,
     id: input.id ?? stableProjectId(input.projectName ?? "Untitled BOQ", input.clientName ?? ""),
@@ -1660,10 +1671,43 @@ function normalizeSnapshot(raw: unknown): WorkspaceSnapshot {
       trainingRows: input.imports.trainingRows || EMBEDDED_TRAINING_LIBRARY_META.rowsRead,
       rateRows: input.imports.rateRows ?? 0
     },
-    items: input.items,
-    costed: input.costed,
+    items,
+    costed: input.costed.filter((row) => itemIds.has(row.item.id) && !isCommercialBoqItem(row.item)),
     message: input.message ?? "Restored saved workspace."
   };
+}
+
+function sanitizeBoqItems(items: BoqItem[]): BoqItem[] {
+  return items.filter((item) => !isCommercialBoqItem(item));
+}
+
+function isCommercialBoqItem(item: BoqItem): boolean {
+  const code = (item.code ?? "").trim();
+  const name = item.name.trim();
+  const label = `${item.name} ${item.dims ?? ""} ${item.spec ?? ""}`.replace(/\s+/g, " ").trim().toLowerCase();
+  const productCode = /^([a-z]{1,4}\s*-?\s*\d+[a-z]?|\d+)$/i.test(code);
+
+  if (productCode) return false;
+
+  if (!item.dims?.trim() && !item.spec?.trim() && (!name || /^boq item \d+$/i.test(name) || /^[a-z]$/i.test(name) || /^[`'"’‘]+$/.test(name))) {
+    return true;
+  }
+
+  return [
+    /\btransportation\b/,
+    /\bhandling charges?\b/,
+    /\binstallation charges?\b/,
+    /\btotal\b/,
+    /\bpackaging\b/,
+    /\ba\s*\+\s*b\b/,
+    /\bgst\b/,
+    /\bpayment terms?\b/,
+    /\btat\b/,
+    /\bwarranty\b/,
+    /\bfabric\b/,
+    /\bpenalty\b/,
+    /\bterms?\s*&?\s*conditions?\b/
+  ].some((pattern) => pattern.test(label));
 }
 
 function downloadBlob(content: string, filename: string, type: string) {
