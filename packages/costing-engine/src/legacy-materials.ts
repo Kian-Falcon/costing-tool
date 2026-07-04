@@ -319,27 +319,66 @@ function seedQty(input: { varId: string; ptype: ProductType; planAreaSft: number
 
 function mergeSpecMaterials(lines: MaterialBreakdownLine[], ratesByKey: Map<string, RateItem>, input: { spec: string; ptype: ProductType; planAreaSft: number; perimeterM: number }) {
   const push = (key: string, label: string, qty: number, source: MaterialBreakdownLine["source"] = "spec") => {
-    if (qty < 0.01 || lines.some((line) => line.materialKey === key)) return;
+    if (qty < 0.01) return;
     const rate = ratesByKey.get(key);
     if (!rate || rate.rate <= 0) return;
+    const existing = lines.find((line) => line.materialKey === key);
+    if (existing) {
+      existing.label = label;
+      existing.qty = roundQty(qty);
+      existing.unit = rate.unit;
+      existing.rate = rate.rate;
+      existing.amount = roundMoney(qty * rate.rate);
+      existing.source = source;
+      return;
+    }
     lines.push({ materialKey: key, label, qty: roundQty(qty), unit: rate.unit, rate: rate.rate, amount: roundMoney(qty * rate.rate), source });
   };
 
   const t = input.spec;
+  const isTable = input.ptype === "TABLE" || input.ptype === "TABLE_WOOD";
   const hasStone = /STONE.?TOP|MARBLE.?TOP|GRANITE|QUARTZ/.test(t);
   const hasSolidSurface = /SOLID.?SURFACE|CORIAN|HI.?MACS/.test(t);
+  const hasMdf25 = /25.?MM.?MDF|MDF.?25/.test(t);
+  const hasMdf18 = /18.?MM.?MDF|MDF.?18/.test(t);
+  const hasMdf = /\bMDF\b/.test(t);
+  const hasPly18 = /18.?MM.?PLY|PLY.?18|PLYWOOD/.test(t);
+  const hasPly12 = /12.?MM.?PLY|PLY.?12/.test(t);
+  const hasLaminate = /LAMINATE|LAMINATED|HPL/.test(t) && !/VENEER/.test(t);
+  const hasVeneer = /VENEER/.test(t);
+  const hasLooseBase = /LOOSE.?(BASE|METAL)|SEPARATE.?BASE|SPIDER.?(BASE|PLATE)|PEDESTAL.?BASE|TRUMPET.?BASE/.test(t);
+  const hasMsFrame = /MS.?PIPE|METAL.?BASE|MS.?FRAME|MS.?BASE|MS.?LEG|METAL.?FRAME|METAL.?LEG|POWDER.?COAT.?(METAL|MS|BASE)/.test(t);
+  const hasPowderCoat = /POWDER.?COAT/.test(t);
+
+  if (hasMdf25) push("mdf_25", "MDF 25mm substrate", input.planAreaSft * 2.8);
+  else if (hasMdf18) push("mdf_18", "MDF 18mm substrate", input.planAreaSft * 2.8);
+  else if (hasMdf) push("mdf_18", "MDF substrate", input.planAreaSft * 2.5);
+
+  if (hasPly18) push("ply_18_mr", isTable ? "Plywood 18mm top" : "Plywood 18mm carcass", input.planAreaSft * (isTable ? 1.15 : 2.8));
+  else if (hasPly12) push("ply_12_com", "Plywood 12mm", input.planAreaSft * (isTable ? 1.15 : 2.2));
+
+  if (hasLaminate && !hasStone && !hasSolidSurface) {
+    push("laminate", "Laminate surface", input.planAreaSft * 2.5);
+    push("balancing", "Balancing sheet", input.planAreaSft * 2);
+  }
+  if (hasVeneer && !hasStone && !hasSolidSurface) push("veneer", "Wood veneer", input.planAreaSft * 1.5);
   if (hasStone || hasSolidSurface) push(hasStone ? "stone" : "ss_surface", hasStone ? "Stone/Marble top incl. fabrication" : "Solid surface incl. fabrication", input.planAreaSft * 1.05);
   if (/WIRE.?SUPPORT/.test(t)) push("ms_wire", "MS wire support", 1.5);
-  if (/SPIDER.?(BASE|PLATE)|PEDESTAL.?BASE|TRUMPET.?BASE|LOOSE.?(BASE|METAL)/.test(t)) {
+  if (hasMsFrame && !hasLooseBase) {
+    const kg = input.planAreaSft > 0 ? input.planAreaSft * 3.5 : 6;
+    push("ms_pipe_gen", "MS frame/pipe", kg);
+    if (hasPowderCoat) push("powder_coat", "Powder coat", kg);
+  } else if (hasLooseBase) {
     const kg = Math.min(10, Math.max(2, input.planAreaSft * 1.5));
     push("ms_pipe_63", "MS loose base estimate", kg);
-    if (/POWDER.?COAT/.test(t)) push("powder_coat", "Powder coat base", Math.min(kg, 3));
+    if (hasPowderCoat) push("powder_coat", "Powder coat base", Math.min(kg, 3));
   }
-  if (input.perimeterM > 0 && /LAMINATE|MDF|PLY|PLYWOOD/.test(t)) push("edgeband", "Edgebanding", input.perimeterM * 3);
+  if (input.perimeterM > 0 && (hasMdf || hasPly18 || hasPly12 || hasLaminate)) push("edgeband", "Edgebanding", input.perimeterM * 3);
   if (/\bBIN\b/.test(t)) {
     push("ms_pipe_gen", "Bin frame/lining estimate", 2);
     push("hinge_soft", "Hinges", 2);
   }
+  if (input.planAreaSft > 0 && (hasMdf || hasPly18 || hasLaminate)) push("fevicol_sft", "Fevicol", input.planAreaSft * 2);
 }
 
 function mergePrimarySpecMaterials(lines: MaterialBreakdownLine[], ratesByKey: Map<string, RateItem>, input: { spec: string; ptype: ProductType; planAreaSft: number }) {

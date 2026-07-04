@@ -32,6 +32,55 @@ export async function ensureEmbeddedRateLibrary(user: OrgUser) {
   return { created: missingRates.length, totalEmbedded: EMBEDDED_RM_RATES.length };
 }
 
+export async function resetEmbeddedRateLibrary(user: OrgUser) {
+  for (const rate of EMBEDDED_RM_RATES) {
+    await prisma.rateItem.upsert({
+      where: {
+        organizationId_key: {
+          organizationId: user.organizationId,
+          key: rate.key
+        }
+      },
+      create: {
+        organizationId: user.organizationId,
+        key: rate.key,
+        label: rate.label,
+        rate: rate.rate,
+        unit: rate.unit,
+        category: rate.category,
+        source: `embedded:${rate.source}`,
+        custom: false
+      },
+      update: {
+        label: rate.label,
+        rate: rate.rate,
+        unit: rate.unit,
+        category: rate.category,
+        source: `embedded:${rate.source}`,
+        custom: false
+      }
+    });
+  }
+
+  const rates = await prisma.rateItem.findMany({
+    where: { organizationId: user.organizationId },
+    orderBy: [{ category: "asc" }, { label: "asc" }]
+  });
+
+  return {
+    count: EMBEDDED_RM_RATES.length,
+    rates: rates.map((rate) => ({
+      key: rate.key,
+      label: rate.label,
+      rate: Number(rate.rate),
+      unit: rate.unit,
+      category: rate.category,
+      source: rate.source,
+      custom: rate.custom
+    }))
+  };
+}
+
 export async function ensureEmbeddedVendorDirectory(user: OrgUser) {
   await ensureEmbeddedRateLibrary(user);
 

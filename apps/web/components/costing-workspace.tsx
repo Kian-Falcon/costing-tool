@@ -2,7 +2,7 @@
 
 import { costItem, rebuildModelsFromCorpus, rebuildRatioNorms } from "@kf/costing-engine";
 import type { AddedMaterial, BoqItem, CorpusProduct, CostResult, MaterialBreakdownLine, RateItem, RatioNorm, TrainedModel } from "@kf/shared";
-import { Calculator, Database, Download, FileUp, Library, Loader2, Save, Trash2, UploadCloud } from "lucide-react";
+import { Calculator, Database, Download, FileUp, Library, Loader2, Percent, RotateCcw, Save, Trash2, UploadCloud } from "lucide-react";
 import type { ReactNode } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
@@ -77,8 +77,9 @@ export function CostingWorkspace({ initialView = "workspace" }: { initialView?: 
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
   const [rateSearch, setRateSearch] = useState("");
   const [vendorSearch, setVendorSearch] = useState("");
+  const [globalMargin, setGlobalMargin] = useState(30);
   const [busy, setBusy] = useState<string | null>(null);
-  const [message, setMessage] = useState("Load training and RM rates, then upload a BOQ.");
+  const [message, setMessage] = useState("Embedded RM rates are ready. Load training data, then upload a BOQ.");
   const [lastSaved, setLastSaved] = useState<string | null>(null);
   const hydrated = useRef(false);
 
@@ -99,7 +100,7 @@ export function CostingWorkspace({ initialView = "workspace" }: { initialView?: 
     [selectedItem, imports.rates, imports.corpus, models, ratioNorms]
   );
   const reviewRows = useMemo(
-    () => costed.filter((row) => row.result.confidence < 0.55 || row.result.matchLevel === "new" || row.result.source === "seed"),
+    () => costed.filter((row) => row.result.confidence < 0.45 || row.result.matchLevel === "new" || row.result.source === "seed" || manualVarianceLevel(row) !== "none"),
     [costed]
   );
 
@@ -206,6 +207,22 @@ export function CostingWorkspace({ initialView = "workspace" }: { initialView?: 
     setBusy(null);
   }
 
+  async function applyGlobalMargin() {
+    if (!items.length) {
+      setMessage("Upload a BOQ before applying a global margin.");
+      return;
+    }
+    const updatedItems = items.map((item) => ({ ...item, margin: globalMargin }));
+    setItems(updatedItems);
+    if (costed.length) {
+      setBusy("margin");
+      const result = await costItems(updatedItems);
+      setCosted(result.items);
+      setBusy(null);
+    }
+    setMessage(`Applied ${globalMargin}% margin to ${updatedItems.length} BOQ rows.`);
+  }
+
   async function recostItem(item: BoqItem) {
     setBusy(`cost:${item.id}`);
     const result = await costItems([item]);
@@ -233,11 +250,11 @@ export function CostingWorkspace({ initialView = "workspace" }: { initialView?: 
     }
   }
 
-  async function costItems(inputItems: BoqItem[]) {
+  async function costItems(inputItems: BoqItem[], rateList = imports.rates) {
     const response = await fetch("/api/boqs/cost", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ items: inputItems, rates: imports.rates, corpus: imports.corpus, models, ratioNorms })
+      body: JSON.stringify({ items: inputItems, rates: rateList, corpus: imports.corpus, models, ratioNorms })
     });
     return (await response.json()) as { items: CostedRow[]; meta: { modelCount: number; ratioNormCount: number } };
   }
@@ -281,6 +298,41 @@ export function CostingWorkspace({ initialView = "workspace" }: { initialView?: 
     void deleteRate(key);
   }
 
+  async function resetEmbeddedRates() {
+    setBusy("rates-reset");
+    try {
+      const response = await fetch("/api/rates/reset", { method: "POST" });
+      const body = (await response.json()) as { rates?: RateItem[]; count?: number; error?: string };
+      if (!response.ok || !body.rates) throw new Error(body.error ?? "Could not reset embedded RM rates.");
+      setImports((current) => ({ ...current, rates: body.rates ?? current.rates, rateRows: Math.max(current.rateRows, body.count ?? 0) }));
+      if (costed.length) {
+        const result = await costItems(items, body.rates);
+        setCosted(result.items);
+      }
+      setMessage(`Restored ${body.count ?? body.rates.length} embedded RM rates from the built-in library.`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not reset embedded RM rates.");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function resetEmbeddedTraining() {
+    setBusy("training-reset");
+    try {
+      const response = await fetch("/api/training-sources/reset", { method: "POST" });
+      const body = (await response.json()) as { products?: CorpusProduct[]; count?: number; error?: string };
+      if (!response.ok || !body.products) throw new Error(body.error ?? "Could not reset embedded training data.");
+      setImports((current) => ({ ...current, corpus: body.products ?? current.corpus, trainingRows: body.count ?? body.products?.length ?? current.trainingRows }));
+      setCosted([]);
+      setMessage(`Restored ${body.count ?? body.products.length} embedded training products. Run Cost all rows again.`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not reset embedded training data.");
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function refreshProjects() {
     try {
       const response = await fetch("/api/projects");
@@ -294,11 +346,14 @@ export function CostingWorkspace({ initialView = "workspace" }: { initialView?: 
 
   async function refreshLibraries() {
     try {
-      const [ratesResponse, vendorsResponse] = await Promise.all([fetch("/api/rates"), fetch("/api/vendors")]);
+      const [ratesResponse, vendorsResponse, trainingResponse] = await Promise.all([fetch("/api/rates"), fetch("/api/vendors"), fetch("/api/training-sources")]);
       const ratesBody = ratesResponse.ok ? ((await ratesResponse.json()) as { rates: RateItem[] }) : { rates: [] };
       const vendorsBody = vendorsResponse.ok ? ((await vendorsResponse.json()) as { vendors: VendorLink[] }) : { vendors: [] };
+      const trainingBody = trainingResponse.ok ? ((await trainingResponse.json()) as { products: CorpusProduct[] }) : { products: [] };
       setImports((current) => ({
         ...current,
+        corpus: current.corpus.length ? current.corpus : trainingBody.products,
+        trainingRows: current.trainingRows || trainingBody.products.length,
         rates: current.rates.length ? current.rates : ratesBody.rates,
         vendors: current.vendors.length ? current.vendors : vendorsBody.vendors
       }));
@@ -593,6 +648,22 @@ export function CostingWorkspace({ initialView = "workspace" }: { initialView?: 
             </div>
             <UploadButton label="Upload BOQ" busy={busy === "boq"} accept=".csv,.xlsx,.xls" onFile={uploadBoq} />
             <UploadButton label="Extract BOQ PDF" busy={busy === "pdf"} accept=".pdf" onFile={uploadBoqPdf} />
+            <div className="grid grid-cols-[1fr_auto] gap-2">
+              <label className="grid gap-1 text-xs font-medium text-slate-600">
+                Global margin
+                <select value={globalMargin} onChange={(event) => setGlobalMargin(Number(event.target.value))} className="field">
+                  {[0, 20, 25, 30, 35, 40, 45, 50].map((margin) => (
+                    <option key={margin} value={margin}>
+                      {margin}%
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <button type="button" disabled={!items.length || busy === "margin"} onClick={applyGlobalMargin} className="btn-secondary self-end disabled:text-slate-300">
+                {busy === "margin" ? <Loader2 className="animate-spin" size={15} /> : <Percent size={15} />}
+                Apply
+              </button>
+            </div>
             <button type="button" disabled={!items.length || busy === "cost"} onClick={costAll} className="btn-primary disabled:border-slate-300 disabled:bg-slate-300 disabled:shadow-none">
               {busy === "cost" ? <Loader2 className="animate-spin" size={16} /> : <Calculator size={16} />}
               Cost all rows
@@ -653,11 +724,22 @@ export function CostingWorkspace({ initialView = "workspace" }: { initialView?: 
 
         {activeView === "projects" && <ProjectArchiveView projects={projects} onLoad={loadProject} onDelete={deleteProject} onExportAll={exportAllProjects} />}
 
-        {activeView === "rates" && <RateLibrary rates={imports.rates} search={rateSearch} onSearch={setRateSearch} onUpdate={updateRate} onAdd={addCustomRate} onRemove={removeRate} />}
+        {activeView === "rates" && (
+          <RateLibrary
+            rates={imports.rates}
+            search={rateSearch}
+            busy={busy === "rates-reset"}
+            onSearch={setRateSearch}
+            onUpdate={updateRate}
+            onAdd={addCustomRate}
+            onRemove={removeRate}
+            onReset={resetEmbeddedRates}
+          />
+        )}
 
         {activeView === "vendors" && <VendorDirectory vendors={imports.vendors} search={vendorSearch} onSearch={setVendorSearch} />}
 
-        {activeView === "training" && <TrainingDataView imports={imports} />}
+        {activeView === "training" && <TrainingDataView imports={imports} busy={busy === "training-reset"} onReset={resetEmbeddedTraining} />}
 
         {activeView === "models" && <ModelView models={models} ratioNorms={ratioNorms} />}
 
@@ -733,7 +815,10 @@ function WorkspaceTable({
                 <td className="px-5 py-3 text-ink">
                   <div className="font-medium">{row.item.name}</div>
                   <div className="mt-1 max-w-xl text-xs text-slate-500">{row.item.spec}</div>
-                  {row.result && row.result.confidence < 0.55 ? <div className="mt-2 inline-flex rounded-full bg-amber-50 px-2 py-1 text-xs font-semibold text-copper">Low confidence</div> : null}
+                  <div className="mt-2 flex flex-wrap gap-1">
+                    {row.result && row.result.confidence < 0.45 ? <div className="inline-flex rounded-full bg-amber-50 px-2 py-1 text-xs font-semibold text-copper">AI suggested</div> : null}
+                    {row.result && manualVarianceLevel(row) !== "none" ? <div className={`inline-flex rounded-full px-2 py-1 text-xs font-semibold ${manualVarianceLevel(row) === "red" ? "bg-red-50 text-red-700" : "bg-amber-50 text-copper"}`}>Manual variance {manualVariancePct(row)}%</div> : null}
+                  </div>
                 </td>
                 <td className="px-5 py-3 text-slate-600">{row.item.dims}</td>
                 <td className="px-5 py-3 text-slate-600">{row.item.qty}</td>
@@ -1035,24 +1120,32 @@ function ProjectArchiveView({
 function RateLibrary({
   rates,
   search,
+  busy,
   onSearch,
   onUpdate,
   onAdd,
-  onRemove
+  onRemove,
+  onReset
 }: {
   rates: RateItem[];
   search: string;
+  busy: boolean;
   onSearch: (value: string) => void;
   onUpdate: (key: string, patch: Partial<RateItem>) => void;
   onAdd: () => void;
   onRemove: (key: string) => void;
+  onReset: () => void | Promise<void>;
 }) {
   const filtered = rates.filter((rate) => `${rate.key} ${rate.label} ${rate.category}`.toLowerCase().includes(search.toLowerCase()));
   return (
     <Panel title="Rate Library" icon={<Library size={18} />}>
-      <div className="mb-3 grid gap-2 md:grid-cols-[1fr_auto]">
+      <div className="mb-3 grid gap-2 md:grid-cols-[1fr_auto_auto]">
         <input value={search} onChange={(event) => onSearch(event.target.value)} placeholder="Search rates" className="field" />
         <button onClick={onAdd} className="btn-primary">Add rate</button>
+        <button disabled={busy} onClick={onReset} className="btn-secondary disabled:text-slate-300">
+          {busy ? <Loader2 className="animate-spin" size={15} /> : <RotateCcw size={15} />}
+          Reset embedded
+        </button>
       </div>
       <div className="overflow-x-auto">
         <table className="w-full min-w-[760px] text-left text-sm">
@@ -1102,11 +1195,18 @@ function VendorDirectory({ vendors, search, onSearch }: { vendors: VendorLink[];
   );
 }
 
-function TrainingDataView({ imports }: { imports: ImportState }) {
+function TrainingDataView({ imports, busy, onReset }: { imports: ImportState; busy: boolean; onReset: () => void | Promise<void> }) {
   const byType = groupCounts(imports.corpus.map((row) => row.ptype));
   const storageKb = Math.round(JSON.stringify(imports).length / 1024);
   return (
     <Panel title="Training Data" icon={<Database size={18} />}>
+      <div className="mb-4 flex flex-col gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-900 sm:flex-row sm:items-center sm:justify-between">
+        <span>Default training products load automatically from the embedded costing corpus.</span>
+        <button disabled={busy} onClick={onReset} className="btn-secondary bg-white disabled:text-slate-300">
+          {busy ? <Loader2 className="animate-spin" size={15} /> : <RotateCcw size={15} />}
+          Reset embedded
+        </button>
+      </div>
       <div className="grid gap-3 md:grid-cols-4">
         <Stat label="Products" value={imports.corpus.length} />
         <Stat label="Training rows" value={imports.trainingRows} />
@@ -1453,6 +1553,20 @@ function kindLabel(kind: string): string {
 function exportJobFormat(job: ExportJob): string {
   const input = job.input as { format?: unknown };
   return typeof input.format === "string" ? input.format : "";
+}
+
+function manualVariancePct(row: CostedRow): number {
+  const manual = row.item.manualFac ?? 0;
+  if (!manual) return 0;
+  const algorithmFactory = roundMoney(row.result.raw * 1.65);
+  return Math.round(((algorithmFactory - manual) / manual) * 100);
+}
+
+function manualVarianceLevel(row: CostedRow): "none" | "amber" | "red" {
+  const abs = Math.abs(manualVariancePct(row));
+  if (abs > 30) return "red";
+  if (abs > 20) return "amber";
+  return "none";
 }
 
 function stableProjectId(projectName: string, clientName: string): string {

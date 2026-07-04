@@ -23,6 +23,27 @@ describe("costItem", () => {
     expect(result.breakdown.some((line) => line.materialKey === "laminate")).toBe(false);
   });
 
+  it("uses legacy explicit material multipliers for MDF laminate table specs", () => {
+    const result = costItem({
+      item: {
+        id: "explicit-table",
+        name: "Custom Unit",
+        ptype: "UNKNOWN",
+        dims: "1000x500x750",
+        qty: 1,
+        margin: 30,
+        spec: "25mm MDF top with laminate and MS pedestal base powder coat"
+      }
+    });
+
+    const byKey = new Map(result.breakdown.map((line) => [line.materialKey, line]));
+    expect(byKey.get("mdf_25")?.qty).toBeCloseTo(15.07, 1);
+    expect(byKey.get("laminate")?.qty).toBeCloseTo(13.46, 1);
+    expect(byKey.get("balancing")?.qty).toBeCloseTo(10.76, 1);
+    expect(byKey.get("ms_pipe_63")?.qty).toBeCloseTo(8.07, 1);
+    expect(byKey.get("fevicol_sft")?.qty).toBeCloseTo(10.76, 1);
+  });
+
   it("lets manual overrides win over generated estimates", () => {
     const result = costItem({
       item: {

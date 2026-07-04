@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { authJsonError, requireRole, requireUser } from "../../../lib/auth";
 import { prisma } from "../../../lib/prisma";
+import { ensureEmbeddedTrainingLibrary, loadCorpusProducts } from "../../../lib/training-library-seed";
 
 export const runtime = "nodejs";
 
@@ -50,6 +51,7 @@ const MATERIAL_KEYS = [
 export async function GET() {
   try {
     const user = await requireUser();
+    const seed = await ensureEmbeddedTrainingLibrary(user);
     const sources = await prisma.trainingSource.findMany({
       where: { organizationId: user.organizationId },
       include: { products: true },
@@ -57,7 +59,14 @@ export async function GET() {
       take: 25
     });
 
+    const products = await loadCorpusProducts(user);
+
     return NextResponse.json({
+      meta: {
+        embeddedCreated: seed.created,
+        embeddedProductCount: seed.productCount
+      },
+      products,
       sources: sources.map((source) => ({
         id: source.id,
         filename: source.filename,
