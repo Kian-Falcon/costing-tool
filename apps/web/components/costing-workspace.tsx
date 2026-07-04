@@ -1,6 +1,7 @@
 "use client";
 
 import { costItem, rebuildModelsFromCorpus, rebuildRatioNorms } from "@kf/costing-engine";
+import { parseBoqCsv, parseBoqWorkbook } from "@kf/importers";
 import type { AddedMaterial, BoqItem, CorpusProduct, CostResult, MaterialBreakdownLine, RateItem, RatioNorm, TrainedModel } from "@kf/shared";
 import { Calculator, Database, Download, FileUp, Library, Loader2, Percent, RotateCcw, Save, Trash2, UploadCloud } from "lucide-react";
 import type { ReactNode } from "react";
@@ -73,6 +74,7 @@ type ActiveView = "workspace" | "projects" | "rates" | "vendors" | "training" | 
 
 const SNAPSHOT_KEY = "kf-costing-workspace-v2";
 const ARCHIVE_KEY = "kf-costing-project-archive-v1";
+const MAX_SERVER_BOQ_UPLOAD_BYTES = 4 * 1024 * 1024;
 const EMBEDDED_TRAINING_STATS: TrainingSourceStat[] = EMBEDDED_TRAINING_LIBRARY_META.sourceStats.map((source) => ({ ...source }));
 const EMPTY_IMPORTS: ImportState = {
   corpus: EMBEDDED_CORPUS_PRODUCTS,
@@ -196,13 +198,35 @@ export function CostingWorkspace({ initialView = "workspace", showCommandCenter 
 
   async function uploadBoq(file: File) {
     setBusy("boq");
-    const result = await postFile<{ items: BoqItem[] }>("/api/boqs/upload", file);
-    setItems(result.items);
-    setSelectedItemId(result.items[0]?.id ?? null);
+    try {
+      if (file.size > MAX_SERVER_BOQ_UPLOAD_BYTES) {
+        const items = await parseBoqFileInBrowser(file);
+        applyLoadedBoq(file, items);
+        setMessage(`Loaded ${items.length} BOQ rows from ${file.name}. Large file parsed in browser; original file storage was skipped to avoid Vercel upload limits.`);
+        return;
+      }
+
+      try {
+        const result = await postFile<{ items: BoqItem[]; warning?: string }>("/api/boqs/upload", file);
+        applyLoadedBoq(file, result.items);
+        setMessage(result.warning ?? `Loaded ${result.items.length} BOQ rows from ${file.name}.`);
+      } catch (error) {
+        const items = await parseBoqFileInBrowser(file);
+        applyLoadedBoq(file, items);
+        setMessage(`Loaded ${items.length} BOQ rows from ${file.name} in browser. Server upload was unavailable.`);
+      }
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not upload BOQ.");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  function applyLoadedBoq(file: File, loadedItems: BoqItem[]) {
+    setItems(loadedItems);
+    setSelectedItemId(loadedItems[0]?.id ?? null);
     setCosted([]);
     setProjectName(file.name.replace(/\.[^.]+$/, ""));
-    setMessage(`Loaded ${result.items.length} BOQ rows from ${file.name}.`);
-    setBusy(null);
   }
 
   async function uploadBoqPdf(file: File) {
@@ -1584,6 +1608,13 @@ async function postFile<T>(url: string, file: File): Promise<T> {
   const response = await fetch(url, { method: "POST", body });
   if (!response.ok) throw new Error(await response.text());
   return (await response.json()) as T;
+}
+
+async function parseBoqFileInBrowser(file: File): Promise<BoqItem[]> {
+  const name = file.name.toLowerCase();
+  if (name.endsWith(".csv")) return parseBoqCsv(await file.text());
+  if (name.endsWith(".xlsx") || name.endsWith(".xls")) return parseBoqWorkbook(new Uint8Array(await file.arrayBuffer()));
+  throw new Error("Supported BOQ formats are CSV, XLSX, and XLS.");
 }
 
 async function fetchJsonWithTimeout<T>(url: string, init: RequestInit, timeoutMs: number): Promise<T> {
