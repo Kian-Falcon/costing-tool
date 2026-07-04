@@ -10,19 +10,25 @@ import PDFDocument from "pdfkit";
 
 type PdfVariant = "quotation" | "internal" | "pi";
 
-export async function buildClientQuotationPdf(rows: CostedBoqRow[]): Promise<Buffer> {
-  return buildPdf("Client Quotation", "Commercial quotation prepared from the priced BOQ.", buildClientQuotationRows(rows), "quotation");
+export type ExportDocumentMeta = {
+  projectName?: string;
+  clientName?: string;
+  clientAddress?: string;
+};
+
+export async function buildClientQuotationPdf(rows: CostedBoqRow[], meta: ExportDocumentMeta = {}): Promise<Buffer> {
+  return buildPdf("Client Quotation", "Commercial quotation prepared from the priced BOQ.", buildClientQuotationRows(rows), "quotation", meta);
 }
 
-export async function buildInternalCostingPdf(rows: CostedBoqRow[]): Promise<Buffer> {
-  return buildPdf("Internal Costing", "Internal raw material, factory cost, margin, confidence, and source details.", buildInternalCostingRows(rows), "internal");
+export async function buildInternalCostingPdf(rows: CostedBoqRow[], meta: ExportDocumentMeta = {}): Promise<Buffer> {
+  return buildPdf("Internal Costing", "Internal raw material, factory cost, margin, confidence, and source details.", buildInternalCostingRows(rows), "internal", meta);
 }
 
-export async function buildPiPdf(rows: CostedBoqRow[]): Promise<Buffer> {
-  return buildPdf("Proforma Invoice", "PI export prepared from the approved quotation pricing.", buildPiRows(rows), "pi");
+export async function buildPiPdf(rows: CostedBoqRow[], meta: ExportDocumentMeta = {}): Promise<Buffer> {
+  return buildPdf("Proforma Invoice", "PI export prepared from the approved quotation pricing.", buildPiRows(rows), "pi", meta);
 }
 
-async function buildPdf(title: string, subtitle: string, rows: Record<string, unknown>[], variant: PdfVariant): Promise<Buffer> {
+async function buildPdf(title: string, subtitle: string, rows: Record<string, unknown>[], variant: PdfVariant, meta: ExportDocumentMeta): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const document = new PDFDocument({ margin: 36, size: "A4", bufferPages: true });
     const chunks: Buffer[] = [];
@@ -31,11 +37,11 @@ async function buildPdf(title: string, subtitle: string, rows: Record<string, un
     document.on("end", () => resolve(Buffer.concat(chunks)));
     document.on("error", reject);
 
-    renderHeader(document, title, subtitle, variant);
+    renderHeader(document, title, subtitle, variant, meta);
     rows.forEach((row, index) => {
       if (document.y > 700) {
         document.addPage();
-        renderHeader(document, title, subtitle, variant);
+        renderHeader(document, title, subtitle, variant, meta);
       }
       renderRow(document, row, index, variant);
     });
@@ -46,19 +52,25 @@ async function buildPdf(title: string, subtitle: string, rows: Record<string, un
   });
 }
 
-function renderHeader(document: PDFKit.PDFDocument, title: string, subtitle: string, variant: PdfVariant) {
+function renderHeader(document: PDFKit.PDFDocument, title: string, subtitle: string, variant: PdfVariant, meta: ExportDocumentMeta) {
   const docNo = documentNumber(variant);
   renderLogo(document);
-  document.fillColor("#111827").font("Helvetica-Bold").fontSize(11).text("Furniture Manufacturing", 42, 82, { width: 220 });
+  document.fillColor("#111827").font("Helvetica-Bold").fontSize(11).text(companyName(), 42, 82, { width: 220 });
+  document.fillColor("#475569").font("Helvetica").fontSize(7.2).text(companyDetails(), 42, 98, { width: 260 });
   document.fillColor("#111827").font("Helvetica-Bold").fontSize(18).text(documentTitle(title, variant).toUpperCase(), 350, 40, { width: 190, align: "right" });
   document.fillColor("#b91c1c").font("Helvetica-Bold").fontSize(12).text(docNo, 350, 64, { width: 190, align: "right" });
-  document.fillColor("#111827").font("Helvetica").fontSize(8.5).text(`${documentNoLabel(variant)}: ${docNo}   Date: ${new Date().toLocaleDateString("en-IN")}`, 42, 112, { width: 500 });
-  document.text(`Project: ${process.env.EXPORT_PROJECT_LABEL || "Uploaded BOQ"}`, 42, 127, { width: 500 });
+  document.fillColor("#111827").font("Helvetica").fontSize(8.5).text(`${documentNoLabel(variant)}: ${docNo}   Date: ${new Date().toLocaleDateString("en-IN")}`, 42, 122, { width: 500 });
+  document.text(`Project: ${meta.projectName || process.env.EXPORT_PROJECT_LABEL || "Uploaded BOQ"}`, 42, 137, { width: 250 });
+  if (variant !== "internal") {
+    document.text(`Client: ${meta.clientName || process.env.EXPORT_CLIENT_NAME || "Client"}`, 305, 122, { width: 235, align: "right" });
+    const address = meta.clientAddress || process.env.EXPORT_CLIENT_ADDRESS;
+    if (address) document.fillColor("#475569").fontSize(7.5).text(address, 305, 137, { width: 235, align: "right" });
+  }
   if (variant === "internal") {
-    document.fillColor("#b91c1c").font("Helvetica-Bold").fontSize(8).text(subtitle, 42, 142, { width: 500 });
-    document.y = 160;
+    document.fillColor("#b91c1c").font("Helvetica-Bold").fontSize(8).text(subtitle, 42, 154, { width: 500 });
+    document.y = 172;
   } else {
-    document.y = 150;
+    document.y = 168;
   }
   renderTableHeader(document, variant);
 }
@@ -172,12 +184,6 @@ function currency(value: unknown): string {
   return `INR ${amount.toLocaleString("en-IN", { maximumFractionDigits: 0 })}`;
 }
 
-function documentMeta(variant: PdfVariant): string {
-  if (variant === "pi") return "Proforma / PI";
-  if (variant === "internal") return "Internal use only";
-  return "Quotation";
-}
-
 function documentTitle(title: string, variant: PdfVariant): string {
   if (variant === "pi") return "Proforma Invoice";
   return title;
@@ -209,6 +215,18 @@ function renderLogo(document: PDFKit.PDFDocument) {
   }
   document.fillColor("#111827").font("Helvetica-Bold").fontSize(26).text("Kian", 42, 36, { continued: true });
   document.fillColor("#b91c1c").text(" Falcon");
+}
+
+function companyName(): string {
+  return process.env.EXPORT_COMPANY_NAME || "Kian Falcon";
+}
+
+function companyDetails(): string {
+  return [
+    process.env.EXPORT_COMPANY_ADDRESS || "Furniture Manufacturing",
+    process.env.EXPORT_COMPANY_GST ? `GST: ${process.env.EXPORT_COMPANY_GST}` : "",
+    process.env.EXPORT_COMPANY_CONTACT || ""
+  ].filter(Boolean).join(" | ");
 }
 
 function findLogoPath(): string | undefined {

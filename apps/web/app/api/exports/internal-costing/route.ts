@@ -9,7 +9,12 @@ export const dynamic = "force-dynamic";
 
 const requestSchema = z.object({
   rows: z.array(z.custom<CostedBoqRow>()),
-  format: z.enum(["csv", "xlsx", "pdf"]).default("csv")
+  format: z.enum(["csv", "xlsx", "pdf"]).default("csv"),
+  meta: z.object({
+    projectName: z.string().optional(),
+    clientName: z.string().optional(),
+    clientAddress: z.string().optional()
+  }).optional()
 });
 
 export async function POST(request: Request) {
@@ -30,7 +35,7 @@ export async function POST(request: Request) {
     }
 
     if (body.format === "pdf") {
-      const buffer = await buildInternalCostingPdf(body.rows);
+      const buffer = await buildInternalCostingPdf(body.rows, body.meta);
       const file = await storeExportOutput({ user, filename: "internal-costing.pdf", contentType: "application/pdf", body: buffer });
       await completeExportJob(job.id, file.storageKey, file.id);
       return fileResponse(buffer, "application/pdf", "internal-costing.pdf", job.id);

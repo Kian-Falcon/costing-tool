@@ -9,7 +9,8 @@ export const runtime = "nodejs";
 const vendorLinkSchema = z.object({
   name: z.string().min(1),
   materialName: z.string().min(1),
-  rateKey: z.string().min(1)
+  rateKey: z.string().min(1),
+  lastRate: z.number().optional()
 });
 
 const saveVendorsSchema = z.object({
@@ -31,7 +32,8 @@ export async function GET() {
         vendor.materials.map((material) => ({
           name: vendor.name,
           materialName: material.materialName,
-          rateKey: material.rateItem?.key ?? ""
+          rateKey: material.rateItem?.key ?? "",
+          lastRate: material.lastRate ? Number(material.lastRate) : undefined
         }))
       )
     });
@@ -74,16 +76,45 @@ export async function POST(request: Request) {
           id: vendorMaterialId(vendor.id, link.materialName, link.rateKey),
           vendorId: vendor.id,
           rateItemId: rate?.id,
-          materialName: link.materialName
+          materialName: link.materialName,
+          lastRate: link.lastRate ?? rate?.rate
         },
         update: {
           rateItemId: rate?.id,
-          materialName: link.materialName
+          materialName: link.materialName,
+          lastRate: link.lastRate ?? rate?.rate
         }
       });
     }
 
     return NextResponse.json({ ok: true, count: body.vendors.length });
+  } catch (error) {
+    return authJsonError(error);
+  }
+}
+
+export async function DELETE(request: Request) {
+  try {
+    const user = await requireUser();
+    requireRole(user, "MEMBER");
+    const { searchParams } = new URL(request.url);
+    const name = searchParams.get("name") ?? "";
+    const materialName = searchParams.get("materialName") ?? "";
+    const rateKey = searchParams.get("rateKey") ?? "";
+    if (!name || !materialName || !rateKey) return NextResponse.json({ error: "name, materialName, and rateKey are required." }, { status: 400 });
+
+    const vendorIdValue = vendorId(user.organizationId, name);
+    await prisma.vendorMaterial.deleteMany({
+      where: {
+        id: vendorMaterialId(vendorIdValue, materialName, rateKey),
+        vendor: { organizationId: user.organizationId }
+      }
+    });
+
+    const remaining = await prisma.vendorMaterial.count({ where: { vendorId: vendorIdValue } });
+    if (!remaining) await prisma.vendor.deleteMany({ where: { id: vendorIdValue, organizationId: user.organizationId } });
+
+    return NextResponse.json({ ok: true });
   } catch (error) {
     return authJsonError(error);
   }

@@ -115,20 +115,75 @@ ${text.slice(0, 30000)}`;
 }
 
 function heuristicRows(text: string): Record<string, unknown>[] {
-  return text
+  const lines = text
     .split(/\r?\n/)
     .map((line) => line.trim())
+    .filter((line) => line.length > 3 && !isPdfNoise(line));
+
+  const rows: Record<string, unknown>[] = [];
+  let pending: Record<string, unknown> | undefined;
+
+  for (const line of lines) {
+    const row = rowFromLine(line, rows.length);
+    if (row) {
+      if (pending) rows.push(pending);
+      pending = row;
+      continue;
+    }
+
+    if (pending && line.length > 8) {
+      pending.Specification = `${pending.Specification || ""} ${line}`.trim();
+    }
+  }
+
+  if (pending) rows.push(pending);
+  if (rows.length) return rows.slice(0, 120);
+
+  return lines
     .filter((line) => line.length > 10)
     .slice(0, 80)
     .map((line, index) => {
-      const qtyMatch = line.match(/\bqty[:\s]+(\d+(?:\.\d+)?)/i) ?? line.match(/\s(\d+(?:\.\d+)?)\s*(?:nos|pcs|qty)\b/i);
-      const dimsMatch = line.match(/\b\d{2,5}\s*[xX*]\s*\d{2,5}(?:\s*[xX*]\s*\d{2,5})?\b/);
+      const qtyMatch = quantityMatch(line);
+      const dimsMatch = dimensionsMatch(line);
       return {
         Code: String(index + 1),
         "Product Name": line.slice(0, 120),
-        Dimensions: dimsMatch?.[0] ?? "",
+        Dimensions: dimsMatch ?? "",
         Specification: line,
-        Qty: qtyMatch ? Number(qtyMatch[1]) : 1
+        Qty: qtyMatch ?? 1
       };
     });
+}
+
+function rowFromLine(line: string, index: number): Record<string, unknown> | undefined {
+  const dims = dimensionsMatch(line);
+  const qty = quantityMatch(line);
+  const serial = line.match(/^\s*(\d{1,3}|[A-Z]{1,4}[-/]\d{1,4})[\).\-:\s]+(.+)$/i);
+  const hasFurnitureWord = /\b(table|desk|chair|sofa|cabinet|storage|counter|unit|partition|panel|workstation|pedestal|credenza|bench|locker|shelf|wardrobe)\b/i.test(line);
+  if (!dims && !serial && !hasFurnitureWord) return undefined;
+
+  const code = serial?.[1] ?? String(index + 1);
+  const body = (serial?.[2] ?? line).replace(/\bqty[:\s]*\d+(?:\.\d+)?\b/gi, "").replace(/\b\d+(?:\.\d+)?\s*(?:nos|pcs)\b/gi, "").trim();
+  const name = dims ? body.replace(dims, "").replace(/\s{2,}/g, " ").trim() : body;
+  return {
+    Code: code,
+    "Product Name": name.slice(0, 140) || body.slice(0, 140),
+    Dimensions: dims ?? "",
+    Specification: line,
+    Qty: qty ?? 1
+  };
+}
+
+function dimensionsMatch(line: string): string | undefined {
+  return line.match(/\b\d{2,5}\s*(?:mm)?\s*[xX*]\s*\d{2,5}\s*(?:mm)?(?:\s*[xX*]\s*\d{2,5}\s*(?:mm)?)?\b/)?.[0];
+}
+
+function quantityMatch(line: string): number | undefined {
+  const match = line.match(/\bqty[:\s]+(\d+(?:\.\d+)?)/i) ?? line.match(/\b(\d+(?:\.\d+)?)\s*(?:nos|pcs)\b/i);
+  const value = Number(match?.[1]);
+  return Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+function isPdfNoise(line: string): boolean {
+  return /^(page\s+\d+|terms|conditions|subtotal|grand total|gst|cgst|sgst|amount in words|quotation|proforma invoice)$/i.test(line);
 }

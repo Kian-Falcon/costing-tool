@@ -9,7 +9,12 @@ export const dynamic = "force-dynamic";
 
 const requestSchema = z.object({
   rows: z.array(z.custom<CostedBoqRow>()),
-  format: z.enum(["csv", "xlsx", "pdf"]).default("xlsx")
+  format: z.enum(["csv", "xlsx", "pdf"]).default("xlsx"),
+  meta: z.object({
+    projectName: z.string().optional(),
+    clientName: z.string().optional(),
+    clientAddress: z.string().optional()
+  }).optional()
 });
 
 export async function POST(request: Request) {
@@ -23,7 +28,7 @@ export async function POST(request: Request) {
     jobId = job.id;
 
     if (body.format === "pdf") {
-      const buffer = await buildPiPdf(body.rows);
+      const buffer = await buildPiPdf(body.rows, body.meta);
       const file = await storeExportOutput({ user, filename: "proforma-invoice.pdf", contentType: "application/pdf", body: buffer });
       await completeExportJob(job.id, file.storageKey, file.id);
       return fileResponse(buffer, "application/pdf", "proforma-invoice.pdf", job.id);

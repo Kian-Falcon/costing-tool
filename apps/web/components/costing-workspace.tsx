@@ -15,6 +15,7 @@ type VendorLink = {
   name: string;
   materialName: string;
   rateKey: string;
+  lastRate?: number;
 };
 
 type ImportState = {
@@ -199,6 +200,25 @@ export function CostingWorkspace({ initialView = "workspace" }: { initialView?: 
     }
   }
 
+  async function uploadSpecPdf(file: File, mode: "spec-book" | "pi") {
+    setBusy(mode === "pi" ? "pi-pdf" : "spec-pdf");
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      form.append("mode", mode);
+      const response = await fetch("/api/ai/extract-spec-pdf", { method: "POST", body: form });
+      const result = (await response.json()) as { sections?: unknown[]; fallbackSections?: unknown[]; warning?: string; error?: string };
+      const sections = result.sections ?? result.fallbackSections ?? [];
+      if (!response.ok && !sections.length) throw new Error(result.error ?? "Could not extract PDF.");
+      setMessage(result.warning ?? `Extracted ${sections.length} ${mode === "pi" ? "PI" : "spec"} rows from ${file.name}. The original PDF and extraction job were stored.`);
+      await refreshExportJobs();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not extract PDF.");
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function costAll() {
     setBusy("cost");
     const result = await costItems(items);
@@ -296,6 +316,31 @@ export function CostingWorkspace({ initialView = "workspace" }: { initialView?: 
   function removeRate(key: string) {
     setImports((current) => ({ ...current, rates: current.rates.filter((rate) => rate.key !== key) }));
     void deleteRate(key);
+  }
+
+  function addVendorLink() {
+    const link: VendorLink = { name: "New vendor", materialName: "Material", rateKey: imports.rates[0]?.key ?? "custom", lastRate: imports.rates[0]?.rate ?? 0 };
+    setImports((current) => ({ ...current, vendors: [link, ...current.vendors] }));
+    void saveVendors([link]);
+  }
+
+  function updateVendorLink(index: number, patch: Partial<VendorLink>) {
+    let updated: VendorLink | undefined;
+    setImports((current) => ({
+      ...current,
+      vendors: current.vendors.map((vendor, vendorIndex) => {
+        if (vendorIndex !== index) return vendor;
+        updated = { ...vendor, ...patch };
+        return updated;
+      })
+    }));
+    if (updated) void saveVendors([updated]);
+  }
+
+  function removeVendorLink(index: number) {
+    const vendor = imports.vendors[index];
+    setImports((current) => ({ ...current, vendors: current.vendors.filter((_, vendorIndex) => vendorIndex !== index) }));
+    if (vendor) void deleteVendor(vendor);
   }
 
   async function resetEmbeddedRates() {
@@ -450,6 +495,15 @@ export function CostingWorkspace({ initialView = "workspace" }: { initialView?: 
     }
   }
 
+  async function deleteVendor(vendor: VendorLink) {
+    try {
+      const params = new URLSearchParams({ name: vendor.name, materialName: vendor.materialName, rateKey: vendor.rateKey });
+      await fetch(`/api/vendors?${params.toString()}`, { method: "DELETE" });
+    } catch {
+      // Snapshot persistence remains the fallback.
+    }
+  }
+
   async function saveVendors(vendors: VendorLink[]) {
     try {
       await fetch("/api/vendors", {
@@ -536,7 +590,7 @@ export function CostingWorkspace({ initialView = "workspace" }: { initialView?: 
     const response = await fetch(`/api/exports/${kind}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ rows: costed, format })
+      body: JSON.stringify({ rows: costed, format, meta: { projectName, clientName } })
     });
     if (!response.ok) {
       setBusy(null);
@@ -582,6 +636,11 @@ export function CostingWorkspace({ initialView = "workspace" }: { initialView?: 
       <ExportButtonRow title="Client quotation" disabled={!costed.length} busy={busy} kind="client-quotation" formats={["csv", "xlsx", "pdf"]} onExport={exportFile} />
       <ExportButtonRow title="Internal costing" disabled={!costed.length} busy={busy} kind="internal-costing" formats={["csv", "xlsx", "pdf"]} onExport={exportFile} />
       <ExportButtonRow title="PI" disabled={!costed.length} busy={busy} kind="pi" formats={["xlsx", "pdf"]} onExport={exportFile} />
+      <div className="grid gap-2 rounded-md border border-slate-200 bg-white p-3">
+        <div className="text-xs font-semibold uppercase text-slate-500">PDF extraction</div>
+        <UploadButton label="Extract Spec Book" busy={busy === "spec-pdf"} accept=".pdf" onFile={(file) => uploadSpecPdf(file, "spec-book")} />
+        <UploadButton label="Extract PI PDF" busy={busy === "pi-pdf"} accept=".pdf" onFile={(file) => uploadSpecPdf(file, "pi")} />
+      </div>
       <ExportHistory jobs={exportJobs} />
       <button onClick={exportSnapshot} className="btn-secondary">
         Save snapshot
@@ -737,7 +796,16 @@ export function CostingWorkspace({ initialView = "workspace" }: { initialView?: 
           />
         )}
 
-        {activeView === "vendors" && <VendorDirectory vendors={imports.vendors} search={vendorSearch} onSearch={setVendorSearch} />}
+        {activeView === "vendors" && (
+          <VendorDirectory
+            vendors={imports.vendors}
+            search={vendorSearch}
+            onSearch={setVendorSearch}
+            onAdd={addVendorLink}
+            onUpdate={updateVendorLink}
+            onRemove={removeVendorLink}
+          />
+        )}
 
         {activeView === "training" && <TrainingDataView imports={imports} busy={busy === "training-reset"} onReset={resetEmbeddedTraining} />}
 
@@ -1177,19 +1245,55 @@ function RateLibrary({
   );
 }
 
-function VendorDirectory({ vendors, search, onSearch }: { vendors: VendorLink[]; search: string; onSearch: (value: string) => void }) {
-  const filtered = vendors.filter((vendor) => `${vendor.name} ${vendor.materialName} ${vendor.rateKey}`.toLowerCase().includes(search.toLowerCase()));
+function VendorDirectory({
+  vendors,
+  search,
+  onSearch,
+  onAdd,
+  onUpdate,
+  onRemove
+}: {
+  vendors: VendorLink[];
+  search: string;
+  onSearch: (value: string) => void;
+  onAdd: () => void;
+  onUpdate: (index: number, patch: Partial<VendorLink>) => void;
+  onRemove: (index: number) => void;
+}) {
+  const filtered = vendors
+    .map((vendor, index) => ({ ...vendor, index }))
+    .filter((vendor) => `${vendor.name} ${vendor.materialName} ${vendor.rateKey}`.toLowerCase().includes(search.toLowerCase()));
   return (
     <Panel title="Vendor Directory" icon={<Database size={18} />}>
-      <input value={search} onChange={(event) => onSearch(event.target.value)} placeholder="Search vendors" className="field mb-3" />
-      <div className="grid gap-2">
-        {filtered.length ? filtered.slice(0, 200).map((vendor, index) => (
-          <div key={`${vendor.name}:${vendor.materialName}:${index}`} className="rounded-md border border-slate-200 bg-white p-3 hover:border-slate-300">
-            <div className="font-medium text-ink">{vendor.name}</div>
-            <div className="text-sm text-slate-600">{vendor.materialName}</div>
-            <div className="text-xs text-slate-500">{vendor.rateKey}</div>
-          </div>
-        )) : <EmptyState title="No vendors loaded" text="Import RM rates to populate vendor/material links." />}
+      <div className="mb-3 grid gap-2 md:grid-cols-[1fr_auto]">
+        <input value={search} onChange={(event) => onSearch(event.target.value)} placeholder="Search vendors" className="field" />
+        <button onClick={onAdd} className="btn-primary">Add vendor</button>
+      </div>
+      <div className="overflow-x-auto">
+        {filtered.length ? (
+          <table className="w-full min-w-[720px] text-left text-sm">
+            <thead className="table-head">
+              <tr>
+                <th className="px-3 py-2 font-medium">Vendor</th>
+                <th className="px-3 py-2 font-medium">Material</th>
+                <th className="px-3 py-2 font-medium">Rate key</th>
+                <th className="px-3 py-2 font-medium">Last rate</th>
+                <th className="px-3 py-2 font-medium">Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.slice(0, 200).map((vendor) => (
+                <tr key={`${vendor.name}:${vendor.materialName}:${vendor.rateKey}:${vendor.index}`} className="border-t border-slate-100 hover:bg-slate-50/70">
+                  <td className="px-3 py-2"><input value={vendor.name} onChange={(event) => onUpdate(vendor.index, { name: event.target.value })} className="field px-2 py-1" /></td>
+                  <td className="px-3 py-2"><input value={vendor.materialName} onChange={(event) => onUpdate(vendor.index, { materialName: event.target.value })} className="field px-2 py-1" /></td>
+                  <td className="px-3 py-2"><input value={vendor.rateKey} onChange={(event) => onUpdate(vendor.index, { rateKey: event.target.value })} className="field px-2 py-1" /></td>
+                  <td className="px-3 py-2"><input type="number" value={vendor.lastRate ?? 0} onChange={(event) => onUpdate(vendor.index, { lastRate: Number(event.target.value) })} className="field w-28 px-2 py-1" /></td>
+                  <td className="px-3 py-2"><button onClick={() => onRemove(vendor.index)} className="btn-secondary min-h-0 px-2 py-1 text-xs">Remove</button></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : <EmptyState title="No vendors loaded" text="Embedded vendors load automatically from the RM library." />}
       </div>
     </Panel>
   );
