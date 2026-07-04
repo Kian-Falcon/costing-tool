@@ -74,7 +74,7 @@ const SNAPSHOT_KEY = "kf-costing-workspace-v2";
 const ARCHIVE_KEY = "kf-costing-project-archive-v1";
 const EMPTY_IMPORTS: ImportState = { corpus: [], rates: [], vendors: [], trainingSourceStats: [], trainingRows: 0, rateRows: 0 };
 
-export function CostingWorkspace({ initialView = "workspace" }: { initialView?: ActiveView } = {}) {
+export function CostingWorkspace({ initialView = "workspace", showCommandCenter = initialView === "workspace" }: { initialView?: ActiveView; showCommandCenter?: boolean } = {}) {
   const [projectName, setProjectName] = useState("Untitled BOQ");
   const [clientName, setClientName] = useState("");
   const [imports, setImports] = useState<ImportState>(EMPTY_IMPORTS);
@@ -674,6 +674,106 @@ export function CostingWorkspace({ initialView = "workspace" }: { initialView?: 
     </div>
   );
 
+  const tabs = (
+    <div className="surface flex gap-1 overflow-x-auto p-1.5">
+      {[
+        ["workspace", "Workspace"],
+        ["projects", "Projects"],
+        ["rates", "Rates"],
+        ["vendors", "Vendors"],
+        ["training", "Training"],
+        ["models", "Models"],
+        ["exports", "Exports"],
+        ["editor", "Row Editor"]
+      ].map(([key, label]) => (
+        <button
+          key={key}
+          onClick={() => setActiveView(key as ActiveView)}
+          className={`shrink-0 rounded-md px-3 py-2 text-sm font-semibold ${activeView === key ? "bg-ink text-white shadow-sm" : "text-slate-600 hover:bg-slate-100 hover:text-ink"}`}
+        >
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+
+  const content = (
+    <div className="space-y-4">
+      {activeView === "workspace" && (
+        <WorkspaceTable
+          items={items}
+          costed={costed}
+          selectedItemId={selectedItem?.id}
+          onSelect={(itemId) => {
+            setSelectedItemId(itemId);
+            setActiveView("editor");
+          }}
+          onSave={exportSnapshot}
+        />
+      )}
+
+      {activeView === "projects" && <ProjectArchiveView projects={projects} onLoad={loadProject} onDelete={deleteProject} onExportAll={exportAllProjects} />}
+
+      {activeView === "rates" && (
+        <RateLibrary
+          rates={imports.rates}
+          search={rateSearch}
+          busy={busy === "rates-reset"}
+          onSearch={setRateSearch}
+          onUpdate={updateRate}
+          onAdd={addCustomRate}
+          onRemove={removeRate}
+          onReset={resetEmbeddedRates}
+        />
+      )}
+
+      {activeView === "vendors" && (
+        <VendorDirectory
+          vendors={imports.vendors}
+          search={vendorSearch}
+          onSearch={setVendorSearch}
+          onAdd={addVendorLink}
+          onUpdate={updateVendorLink}
+          onRemove={removeVendorLink}
+        />
+      )}
+
+      {activeView === "training" && <TrainingDataView imports={imports} busy={busy === "training-reset"} onReset={resetEmbeddedTraining} />}
+
+      {activeView === "models" && <ModelView models={models} ratioNorms={ratioNorms} />}
+
+      {activeView === "exports" && (
+        <Panel title="Exports" icon={<Download size={18} />}>
+          {exportControls}
+        </Panel>
+      )}
+
+      {activeView === "editor" && (
+        <RowEditor
+          item={selectedItem}
+          costed={costed.find((row) => row.item.id === selectedItem?.id)}
+          baseline={baselineResult}
+          rates={imports.rates}
+          reviewRows={reviewRows}
+          busy={selectedItem ? busy === `cost:${selectedItem.id}` : false}
+          aiBusy={selectedItem ? busy === `ai:openai:${selectedItem.id}` || busy === `ai:anthropic:${selectedItem.id}` : false}
+          onUpdate={updateItem}
+          onRecost={recostItem}
+          onAiCost={aiCostItem}
+          onSelect={setSelectedItemId}
+        />
+      )}
+    </div>
+  );
+
+  if (!showCommandCenter) {
+    return (
+      <section className="space-y-5">
+        {content}
+      </section>
+    );
+  }
+
   return (
     <section className="space-y-5">
       <div className="surface overflow-hidden">
@@ -766,94 +866,8 @@ export function CostingWorkspace({ initialView = "workspace" }: { initialView?: 
         <Metric label="Quotation Total" value={totals.sell} highlight />
       </div>
 
-      <div className="surface flex gap-1 overflow-x-auto p-1.5">
-        {[
-          ["workspace", "Workspace"],
-          ["projects", "Projects"],
-          ["rates", "Rates"],
-          ["vendors", "Vendors"],
-          ["training", "Training"],
-          ["models", "Models"],
-          ["exports", "Exports"],
-          ["editor", "Row Editor"]
-        ].map(([key, label]) => (
-          <button
-            key={key}
-            onClick={() => setActiveView(key as ActiveView)}
-            className={`shrink-0 rounded-md px-3 py-2 text-sm font-semibold ${activeView === key ? "bg-ink text-white shadow-sm" : "text-slate-600 hover:bg-slate-100 hover:text-ink"}`}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
-
-      <div className="space-y-4">
-
-        {activeView === "workspace" && (
-          <WorkspaceTable
-            items={items}
-            costed={costed}
-            selectedItemId={selectedItem?.id}
-            onSelect={(itemId) => {
-              setSelectedItemId(itemId);
-              setActiveView("editor");
-            }}
-            onSave={exportSnapshot}
-          />
-        )}
-
-        {activeView === "projects" && <ProjectArchiveView projects={projects} onLoad={loadProject} onDelete={deleteProject} onExportAll={exportAllProjects} />}
-
-        {activeView === "rates" && (
-          <RateLibrary
-            rates={imports.rates}
-            search={rateSearch}
-            busy={busy === "rates-reset"}
-            onSearch={setRateSearch}
-            onUpdate={updateRate}
-            onAdd={addCustomRate}
-            onRemove={removeRate}
-            onReset={resetEmbeddedRates}
-          />
-        )}
-
-        {activeView === "vendors" && (
-          <VendorDirectory
-            vendors={imports.vendors}
-            search={vendorSearch}
-            onSearch={setVendorSearch}
-            onAdd={addVendorLink}
-            onUpdate={updateVendorLink}
-            onRemove={removeVendorLink}
-          />
-        )}
-
-        {activeView === "training" && <TrainingDataView imports={imports} busy={busy === "training-reset"} onReset={resetEmbeddedTraining} />}
-
-        {activeView === "models" && <ModelView models={models} ratioNorms={ratioNorms} />}
-
-        {activeView === "exports" && (
-          <Panel title="Exports" icon={<Download size={18} />}>
-            {exportControls}
-          </Panel>
-        )}
-
-        {activeView === "editor" && (
-          <RowEditor
-            item={selectedItem}
-            costed={costed.find((row) => row.item.id === selectedItem?.id)}
-            baseline={baselineResult}
-            rates={imports.rates}
-            reviewRows={reviewRows}
-            busy={selectedItem ? busy === `cost:${selectedItem.id}` : false}
-            aiBusy={selectedItem ? busy === `ai:openai:${selectedItem.id}` || busy === `ai:anthropic:${selectedItem.id}` : false}
-            onUpdate={updateItem}
-            onRecost={recostItem}
-            onAiCost={aiCostItem}
-            onSelect={setSelectedItemId}
-          />
-        )}
-      </div>
+      {tabs}
+      {content}
     </section>
   );
 }
