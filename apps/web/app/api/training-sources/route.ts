@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { authJsonError, requireRole, requireUser } from "../../../lib/auth";
+import { EMBEDDED_TRAINING_LIBRARY_META } from "../../../lib/embedded-training-library";
 import { prisma } from "../../../lib/prisma";
 import { ensureEmbeddedTrainingLibrary, loadCorpusProducts } from "../../../lib/training-library-seed";
 
@@ -64,7 +65,12 @@ export async function GET() {
     return NextResponse.json({
       meta: {
         embeddedCreated: seed.created,
-        embeddedProductCount: seed.productCount
+        embeddedProductCount: seed.productCount,
+        embeddedSourceFile: EMBEDDED_TRAINING_LIBRARY_META.sourceFile,
+        embeddedSourceFiles: EMBEDDED_TRAINING_LIBRARY_META.sourceFiles,
+        embeddedSourceStats: EMBEDDED_TRAINING_LIBRARY_META.sourceStats,
+        embeddedRowsRead: EMBEDDED_TRAINING_LIBRARY_META.rowsRead,
+        embeddedRowsSkipped: EMBEDDED_TRAINING_LIBRARY_META.rowsSkipped
       },
       products,
       sources: sources.map((source) => ({

@@ -26,10 +26,20 @@ const MATERIAL_KEYS = [
 ];
 
 export async function ensureEmbeddedTrainingLibrary(user: OrgUser) {
+  await prisma.trainingSource.deleteMany({
+    where: {
+      organizationId: user.organizationId,
+      filename: {
+        startsWith: "embedded:",
+        not: embeddedSourceName()
+      }
+    }
+  });
+
   const existing = await prisma.trainingSource.findFirst({
     where: {
       organizationId: user.organizationId,
-      filename: `embedded:${EMBEDDED_TRAINING_LIBRARY_META.sourceFile}`
+      filename: embeddedSourceName()
     },
     select: { id: true }
   });
@@ -39,7 +49,7 @@ export async function ensureEmbeddedTrainingLibrary(user: OrgUser) {
   await prisma.trainingSource.create({
     data: {
       organizationId: user.organizationId,
-      filename: `embedded:${EMBEDDED_TRAINING_LIBRARY_META.sourceFile}`,
+      filename: embeddedSourceName(),
       rowCount: EMBEDDED_TRAINING_LIBRARY_META.rowsRead,
       products: {
         create: EMBEDDED_CORPUS_PRODUCTS.map((product) => ({
@@ -73,7 +83,9 @@ export async function resetEmbeddedTrainingLibrary(user: OrgUser) {
   await prisma.trainingSource.deleteMany({
     where: {
       organizationId: user.organizationId,
-      filename: `embedded:${EMBEDDED_TRAINING_LIBRARY_META.sourceFile}`
+      filename: {
+        startsWith: "embedded:"
+      }
     }
   });
   await ensureEmbeddedTrainingLibrary(user);
@@ -117,4 +129,8 @@ function unitFor(materialKey: string): string {
   if (materialKey.endsWith("_cft")) return "CFT";
   if (materialKey.endsWith("_mtr")) return "MTR";
   return "SFT";
+}
+
+function embeddedSourceName(): string {
+  return `embedded:${EMBEDDED_TRAINING_LIBRARY_META.sourceFile}`;
 }

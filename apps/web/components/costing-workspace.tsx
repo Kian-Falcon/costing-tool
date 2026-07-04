@@ -18,10 +18,18 @@ type VendorLink = {
   lastRate?: number;
 };
 
+type TrainingSourceStat = {
+  sourceFile: string;
+  rowsRead: number;
+  rowsImported: number;
+  rowsSkipped: number;
+};
+
 type ImportState = {
   corpus: CorpusProduct[];
   rates: RateItem[];
   vendors: VendorLink[];
+  trainingSourceStats: TrainingSourceStat[];
   trainingRows: number;
   rateRows: number;
 };
@@ -64,7 +72,7 @@ type ActiveView = "workspace" | "projects" | "rates" | "vendors" | "training" | 
 
 const SNAPSHOT_KEY = "kf-costing-workspace-v2";
 const ARCHIVE_KEY = "kf-costing-project-archive-v1";
-const EMPTY_IMPORTS: ImportState = { corpus: [], rates: [], vendors: [], trainingRows: 0, rateRows: 0 };
+const EMPTY_IMPORTS: ImportState = { corpus: [], rates: [], vendors: [], trainingSourceStats: [], trainingRows: 0, rateRows: 0 };
 
 export function CostingWorkspace({ initialView = "workspace" }: { initialView?: ActiveView } = {}) {
   const [projectName, setProjectName] = useState("Untitled BOQ");
@@ -155,8 +163,13 @@ export function CostingWorkspace({ initialView = "workspace" }: { initialView?: 
 
   async function importTraining(file: File) {
     setBusy("training");
-    const result = await postFile<{ sourceFile: string; products: CorpusProduct[]; rowsRead: number; rowsImported: number }>("/api/imports/master-costing", file);
-    setImports((current) => ({ ...current, corpus: result.products, trainingRows: result.rowsRead }));
+    const result = await postFile<{ sourceFile: string; products: CorpusProduct[]; rowsRead: number; rowsImported: number; rowsSkipped: number }>("/api/imports/master-costing", file);
+    setImports((current) => ({
+      ...current,
+      corpus: result.products,
+      trainingRows: result.rowsRead,
+      trainingSourceStats: [{ sourceFile: result.sourceFile, rowsRead: result.rowsRead, rowsImported: result.rowsImported, rowsSkipped: result.rowsSkipped }]
+    }));
     setMessage(`Imported ${result.rowsImported} corpus products from ${file.name}.`);
     void saveTrainingSource(result.sourceFile, result.rowsRead, result.products);
     setBusy(null);
@@ -366,9 +379,14 @@ export function CostingWorkspace({ initialView = "workspace" }: { initialView?: 
     setBusy("training-reset");
     try {
       const response = await fetch("/api/training-sources/reset", { method: "POST" });
-      const body = (await response.json()) as { products?: CorpusProduct[]; count?: number; error?: string };
+      const body = (await response.json()) as { products?: CorpusProduct[]; count?: number; error?: string; meta?: { embeddedSourceStats?: TrainingSourceStat[]; embeddedRowsRead?: number } };
       if (!response.ok || !body.products) throw new Error(body.error ?? "Could not reset embedded training data.");
-      setImports((current) => ({ ...current, corpus: body.products ?? current.corpus, trainingRows: body.count ?? body.products?.length ?? current.trainingRows }));
+      setImports((current) => ({
+        ...current,
+        corpus: body.products ?? current.corpus,
+        trainingRows: body.meta?.embeddedRowsRead ?? body.count ?? body.products?.length ?? current.trainingRows,
+        trainingSourceStats: body.meta?.embeddedSourceStats ?? current.trainingSourceStats
+      }));
       setCosted([]);
       setMessage(`Restored ${body.count ?? body.products.length} embedded training products. Run Cost all rows again.`);
     } catch (error) {
@@ -394,11 +412,14 @@ export function CostingWorkspace({ initialView = "workspace" }: { initialView?: 
       const [ratesResponse, vendorsResponse, trainingResponse] = await Promise.all([fetch("/api/rates"), fetch("/api/vendors"), fetch("/api/training-sources")]);
       const ratesBody = ratesResponse.ok ? ((await ratesResponse.json()) as { rates: RateItem[] }) : { rates: [] };
       const vendorsBody = vendorsResponse.ok ? ((await vendorsResponse.json()) as { vendors: VendorLink[] }) : { vendors: [] };
-      const trainingBody = trainingResponse.ok ? ((await trainingResponse.json()) as { products: CorpusProduct[] }) : { products: [] };
+      const trainingBody = trainingResponse.ok
+        ? ((await trainingResponse.json()) as { products: CorpusProduct[]; meta?: { embeddedSourceStats?: TrainingSourceStat[]; embeddedRowsRead?: number } })
+        : { products: [], meta: undefined };
       setImports((current) => ({
         ...current,
         corpus: current.corpus.length ? current.corpus : trainingBody.products,
-        trainingRows: current.trainingRows || trainingBody.products.length,
+        trainingRows: current.trainingRows || trainingBody.meta?.embeddedRowsRead || trainingBody.products.length,
+        trainingSourceStats: current.trainingSourceStats.length ? current.trainingSourceStats : trainingBody.meta?.embeddedSourceStats ?? [],
         rates: current.rates.length ? current.rates : ratesBody.rates,
         vendors: current.vendors.length ? current.vendors : vendorsBody.vendors
       }));
@@ -1325,6 +1346,21 @@ function TrainingDataView({ imports, busy, onReset }: { imports: ImportState; bu
           </div>
         ))}
       </div>
+      <div className="mt-4 rounded-md border border-slate-200 bg-white">
+        <div className="border-b border-slate-100 px-3 py-2 text-sm font-semibold text-ink">Embedded source workbooks</div>
+        <div className="divide-y divide-slate-100">
+          {imports.trainingSourceStats.length ? imports.trainingSourceStats.map((source) => (
+            <div key={source.sourceFile} className="grid gap-2 px-3 py-2 text-sm text-slate-600 sm:grid-cols-[1fr_auto_auto_auto]">
+              <span className="font-medium text-ink">{source.sourceFile}</span>
+              <span>{source.rowsRead.toLocaleString("en-IN")} rows</span>
+              <span>{source.rowsImported.toLocaleString("en-IN")} products</span>
+              <span>{source.rowsSkipped.toLocaleString("en-IN")} skipped</span>
+            </div>
+          )) : (
+            <div className="px-3 py-3 text-sm text-slate-500">Source counts will appear after embedded training data loads.</div>
+          )}
+        </div>
+      </div>
     </Panel>
   );
 }
@@ -1553,6 +1589,7 @@ function normalizeSnapshot(raw: unknown): WorkspaceSnapshot {
       corpus: input.imports.corpus ?? [],
       rates: input.imports.rates ?? [],
       vendors,
+      trainingSourceStats: input.imports.trainingSourceStats ?? [],
       trainingRows: input.imports.trainingRows ?? 0,
       rateRows: input.imports.rateRows ?? 0
     },
