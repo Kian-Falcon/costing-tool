@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { authJsonError, requireRole, requireUser } from "../../../lib/auth";
 import { prisma } from "../../../lib/prisma";
+import { ensureEmbeddedVendorDirectory } from "../../../lib/rate-library-seed";
 
 export const runtime = "nodejs";
 
@@ -18,6 +19,7 @@ const saveVendorsSchema = z.object({
 export async function GET() {
   try {
     const user = await requireUser();
+    await ensureEmbeddedVendorDirectory(user);
     const vendors = await prisma.vendor.findMany({
       where: { organizationId: user.organizationId },
       include: { materials: { include: { rateItem: true } } },

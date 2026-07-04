@@ -573,8 +573,11 @@ export function CostingWorkspace({ initialView = "workspace" }: { initialView?: 
               <Database size={17} />
               Libraries
             </div>
+            <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-medium text-emerald-800">
+              RM rates load automatically from the embedded raw material library.
+            </div>
             <UploadButton label="Master Costing" busy={busy === "training"} accept=".xlsx,.xls" onFile={importTraining} />
-            <UploadButton label="RM Rates" busy={busy === "rates"} accept=".xlsx,.xls" onFile={importRates} />
+            <UploadButton label="Update RM Rates" busy={busy === "rates"} accept=".xlsx,.xls" onFile={importRates} />
             <div className="grid grid-cols-4 gap-2">
               <Stat label="Corpus" value={imports.corpus.length} />
               <Stat label="Rates" value={imports.rates.length} />

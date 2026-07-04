@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { authJsonError, requireRole, requireUser } from "../../../lib/auth";
+import { EMBEDDED_RATE_LIBRARY_META } from "../../../lib/embedded-rate-library";
 import { prisma } from "../../../lib/prisma";
+import { ensureEmbeddedRateLibrary } from "../../../lib/rate-library-seed";
 
 export const runtime = "nodejs";
 
@@ -22,12 +24,18 @@ const saveRatesSchema = z.object({
 export async function GET() {
   try {
     const user = await requireUser();
+    const seed = await ensureEmbeddedRateLibrary(user);
     const rates = await prisma.rateItem.findMany({
       where: { organizationId: user.organizationId },
       orderBy: [{ category: "asc" }, { label: "asc" }]
     });
 
     return NextResponse.json({
+      meta: {
+        ...EMBEDDED_RATE_LIBRARY_META,
+        seededCreated: seed.created,
+        totalEmbedded: seed.totalEmbedded
+      },
       rates: rates.map((rate) => ({
         key: rate.key,
         label: rate.label,
