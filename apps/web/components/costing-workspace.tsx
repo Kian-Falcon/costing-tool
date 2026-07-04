@@ -5,6 +5,7 @@ import type { AddedMaterial, BoqItem, CorpusProduct, CostResult, MaterialBreakdo
 import { Calculator, Database, Download, FileUp, Library, Loader2, Percent, RotateCcw, Save, Trash2, UploadCloud } from "lucide-react";
 import type { ReactNode } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { EMBEDDED_CORPUS_PRODUCTS, EMBEDDED_TRAINING_LIBRARY_META } from "../lib/embedded-training-library";
 
 type CostedRow = {
   item: BoqItem;
@@ -72,7 +73,15 @@ type ActiveView = "workspace" | "projects" | "rates" | "vendors" | "training" | 
 
 const SNAPSHOT_KEY = "kf-costing-workspace-v2";
 const ARCHIVE_KEY = "kf-costing-project-archive-v1";
-const EMPTY_IMPORTS: ImportState = { corpus: [], rates: [], vendors: [], trainingSourceStats: [], trainingRows: 0, rateRows: 0 };
+const EMBEDDED_TRAINING_STATS: TrainingSourceStat[] = EMBEDDED_TRAINING_LIBRARY_META.sourceStats.map((source) => ({ ...source }));
+const EMPTY_IMPORTS: ImportState = {
+  corpus: EMBEDDED_CORPUS_PRODUCTS,
+  rates: [],
+  vendors: [],
+  trainingSourceStats: EMBEDDED_TRAINING_STATS,
+  trainingRows: EMBEDDED_TRAINING_LIBRARY_META.rowsRead,
+  rateRows: 0
+};
 
 export function CostingWorkspace({ initialView = "workspace", showCommandCenter = initialView === "workspace" }: { initialView?: ActiveView; showCommandCenter?: boolean } = {}) {
   const [projectName, setProjectName] = useState("Untitled BOQ");
@@ -417,9 +426,9 @@ export function CostingWorkspace({ initialView = "workspace", showCommandCenter 
         : { products: [], meta: undefined };
       setImports((current) => ({
         ...current,
-        corpus: current.corpus.length ? current.corpus : trainingBody.products,
-        trainingRows: current.trainingRows || trainingBody.meta?.embeddedRowsRead || trainingBody.products.length,
-        trainingSourceStats: current.trainingSourceStats.length ? current.trainingSourceStats : trainingBody.meta?.embeddedSourceStats ?? [],
+        corpus: current.corpus.length ? current.corpus : trainingBody.products.length ? trainingBody.products : EMBEDDED_CORPUS_PRODUCTS,
+        trainingRows: current.trainingRows || trainingBody.meta?.embeddedRowsRead || trainingBody.products.length || EMBEDDED_TRAINING_LIBRARY_META.rowsRead,
+        trainingSourceStats: current.trainingSourceStats.length ? current.trainingSourceStats : trainingBody.meta?.embeddedSourceStats ?? EMBEDDED_TRAINING_STATS,
         rates: current.rates.length ? current.rates : ratesBody.rates,
         vendors: current.vendors.length ? current.vendors : vendorsBody.vendors
       }));
@@ -1600,11 +1609,11 @@ function normalizeSnapshot(raw: unknown): WorkspaceSnapshot {
     clientName: input.clientName ?? "",
     savedAt: input.savedAt ?? new Date().toISOString(),
     imports: {
-      corpus: input.imports.corpus ?? [],
+      corpus: input.imports.corpus?.length ? input.imports.corpus : EMBEDDED_CORPUS_PRODUCTS,
       rates: input.imports.rates ?? [],
       vendors,
-      trainingSourceStats: input.imports.trainingSourceStats ?? [],
-      trainingRows: input.imports.trainingRows ?? 0,
+      trainingSourceStats: input.imports.trainingSourceStats?.length ? input.imports.trainingSourceStats : EMBEDDED_TRAINING_STATS,
+      trainingRows: input.imports.trainingRows || EMBEDDED_TRAINING_LIBRARY_META.rowsRead,
       rateRows: input.imports.rateRows ?? 0
     },
     items: input.items,
