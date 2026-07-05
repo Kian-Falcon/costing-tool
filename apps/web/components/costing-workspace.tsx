@@ -781,24 +781,51 @@ export function CostingWorkspace({ initialView = "workspace", showCommandCenter 
   }
 
   const exportControls = (
-    <div className="grid gap-3">
-      <ExportButtonRow title="Client quotation" disabled={!costed.length} busy={busy} kind="client-quotation" formats={["csv", "xlsx", "pdf"]} onExport={exportFile} />
-      <ExportButtonRow title="Internal costing" disabled={!costed.length} busy={busy} kind="internal-costing" formats={["csv", "xlsx", "pdf"]} onExport={exportFile} />
-      <ExportButtonRow title="PI" disabled={!piItems.length && !costed.length} busy={busy} kind="pi" formats={["xlsx", "pdf"]} onExport={exportFile} />
-      <div className="grid gap-2 rounded-md border border-slate-200 bg-white p-3">
-        <div className="text-xs font-semibold uppercase text-slate-500">PDF extraction</div>
-        <UploadButton label="Extract Spec Book" busy={busy === "spec-pdf"} accept=".pdf" onFile={(file) => uploadSpecPdf(file, "spec-book")} />
-        <UploadButton label="Extract PI PDF" busy={busy === "pi-pdf"} accept=".pdf" onFile={(file) => uploadSpecPdf(file, "pi")} />
+    <div className="grid gap-4">
+      <div className="grid gap-3 lg:grid-cols-[1.2fr_0.8fr]">
+        <div className="rounded-md border border-ink bg-ink p-4 text-white shadow-sm">
+          <div className="text-xs font-semibold uppercase tracking-wide text-slate-300">Recommended</div>
+          <div className="mt-2 text-lg font-semibold">Client quotation</div>
+          <div className="mt-1 text-sm text-slate-300">Shareable price document for the client.</div>
+          <div className="mt-4 grid gap-2 sm:grid-cols-3">
+            <ExportFormatButton label="PDF" disabled={!costed.length} busy={busy === "client-quotation-pdf"} tone="light" onClick={() => exportFile("client-quotation", "pdf")} />
+            <ExportFormatButton label="XLSX" disabled={!costed.length} busy={busy === "client-quotation-xlsx"} tone="light" onClick={() => exportFile("client-quotation", "xlsx")} />
+            <ExportFormatButton label="CSV" disabled={!costed.length} busy={busy === "client-quotation-csv"} tone="light" onClick={() => exportFile("client-quotation", "csv")} />
+          </div>
+        </div>
+
+        <div className="grid gap-3">
+          <CompactExportCard title="PI" text={piItems.length ? `${piItems.length} PI rows ready` : "Push costed BOQ rows to PI first."}>
+            <ExportFormatButton label="PDF" disabled={!piItems.length && !costed.length} busy={busy === "pi-pdf"} onClick={() => exportFile("pi", "pdf")} />
+            <ExportFormatButton label="XLSX" disabled={!piItems.length && !costed.length} busy={busy === "pi-xlsx"} onClick={() => exportFile("pi", "xlsx")} />
+          </CompactExportCard>
+          <CompactExportCard title="Internal costing" text="Detailed raw, factory, margin, and material breakdown.">
+            <ExportFormatButton label="PDF" disabled={!costed.length} busy={busy === "internal-costing-pdf"} onClick={() => exportFile("internal-costing", "pdf")} />
+            <ExportFormatButton label="XLSX" disabled={!costed.length} busy={busy === "internal-costing-xlsx"} onClick={() => exportFile("internal-costing", "xlsx")} />
+          </CompactExportCard>
+        </div>
       </div>
-      <ExportHistory jobs={exportJobs} />
-      <button onClick={exportSnapshot} className="btn-secondary">
-        Save snapshot
-      </button>
-      <UploadButton label="Load snapshot" busy={busy === "snapshot"} accept=".json" onFile={importSnapshot} />
-      <button onClick={clearSavedWorkspace} className="btn-secondary">
-        <Trash2 size={15} />
-        Clear saved workspace
-      </button>
+
+      <details className="rounded-md border border-slate-200 bg-white p-3">
+        <summary className="cursor-pointer text-sm font-semibold text-ink">Advanced exports and recovery</summary>
+        <div className="mt-3 grid gap-3 lg:grid-cols-3">
+          <div className="grid gap-2 rounded-md bg-slate-50 p-3">
+            <div className="text-xs font-semibold uppercase text-slate-500">PDF extraction</div>
+            <UploadButton label="Extract Spec Book" busy={busy === "spec-pdf"} accept=".pdf" onFile={(file) => uploadSpecPdf(file, "spec-book")} />
+            <UploadButton label="Extract PI PDF" busy={busy === "pi-pdf"} accept=".pdf" onFile={(file) => uploadSpecPdf(file, "pi")} />
+          </div>
+          <div className="grid gap-2 rounded-md bg-slate-50 p-3">
+            <div className="text-xs font-semibold uppercase text-slate-500">Snapshot</div>
+            <button onClick={exportSnapshot} className="btn-secondary">Save snapshot</button>
+            <UploadButton label="Load snapshot" busy={busy === "snapshot"} accept=".json" onFile={importSnapshot} />
+            <button onClick={clearSavedWorkspace} className="btn-secondary">
+              <Trash2 size={15} />
+              Clear saved workspace
+            </button>
+          </div>
+          <ExportHistory jobs={exportJobs} />
+        </div>
+      </details>
     </div>
   );
 
@@ -1626,42 +1653,32 @@ function PiWorkspace({
   );
 }
 
-function ExportButtonRow({
-  title,
-  kind,
-  formats,
-  disabled,
-  busy,
-  onExport
-}: {
-  title: string;
-  kind: "client-quotation" | "internal-costing" | "pi";
-  formats: ExportFormat[];
-  disabled: boolean;
-  busy: string | null;
-  onExport: (kind: "client-quotation" | "internal-costing" | "pi", format: ExportFormat) => void;
-}) {
+function CompactExportCard({ title, text, children }: { title: string; text: string; children: ReactNode }) {
   return (
-    <div className="rounded-md bg-slate-50 p-2">
-      <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">{title}</div>
-      <div className="grid grid-cols-3 gap-1">
-        {formats.map((format) => {
-          const isBusy = busy === `${kind}-${format}`;
-          return (
-            <button
-              key={format}
-              type="button"
-              disabled={disabled || isBusy}
-              onClick={() => onExport(kind, format)}
-              className="flex min-h-9 items-center justify-center gap-1 rounded-md border border-slate-300 bg-white px-2 py-1 text-xs font-medium uppercase text-slate-700 hover:bg-slate-100 disabled:text-slate-300"
-            >
-              {isBusy && <Loader2 className="animate-spin" size={13} />}
-              {format}
-            </button>
-          );
-        })}
+    <div className="rounded-md border border-slate-200 bg-slate-50 p-3">
+      <div className="text-sm font-semibold text-ink">{title}</div>
+      <div className="mt-1 text-xs text-slate-500">{text}</div>
+      <div className="mt-3 grid grid-cols-2 gap-2">
+        {children}
       </div>
     </div>
+  );
+}
+
+function ExportFormatButton({ label, disabled, busy, tone = "default", onClick }: { label: string; disabled: boolean; busy: boolean; tone?: "default" | "light"; onClick: () => void }) {
+  const classes = tone === "light"
+    ? "border-white/30 bg-white text-ink hover:bg-slate-100 disabled:bg-white/40 disabled:text-slate-500"
+    : "border-slate-300 bg-white text-slate-700 hover:bg-slate-100 disabled:text-slate-300";
+  return (
+    <button
+      type="button"
+      disabled={disabled || busy}
+      onClick={onClick}
+      className={`flex min-h-10 items-center justify-center gap-2 rounded-md border px-3 py-2 text-xs font-semibold uppercase ${classes}`}
+    >
+      {busy ? <Loader2 className="animate-spin" size={13} /> : <Download size={13} />}
+      {label}
+    </button>
   );
 }
 
