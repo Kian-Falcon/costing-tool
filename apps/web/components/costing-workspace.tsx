@@ -1,7 +1,7 @@
 "use client";
 
 import { classify, costItem, inferCTFromSpec, rebuildModelsFromCorpus, rebuildRatioNorms } from "@kf/costing-engine";
-import { rowsFromCsvText, rowsFromWorkbookBuffer } from "@kf/importers";
+import { rowsFromBoqCsv, rowsFromBoqWorkbook } from "@kf/importers";
 import type { AddedMaterial, BoqItem, CorpusProduct, CostResult, MaterialBreakdownLine, RateItem, RatioNorm, TrainedModel } from "@kf/shared";
 import { Calculator, Database, Download, FileUp, Library, Loader2, Percent, RotateCcw, Save, Trash2, UploadCloud } from "lucide-react";
 import type { ReactNode } from "react";
@@ -346,7 +346,16 @@ export function CostingWorkspace({ initialView = "workspace", showCommandCenter 
   async function uploadBoqPdf(file: File) {
     setBusy("pdf");
     try {
-      const pageImages = await renderPdfPageImages(file);
+      let pageImages: PdfPageImage[] = [];
+      try {
+        pageImages = await renderPdfPageImages(file);
+      } catch (renderError) {
+        const result = await postFile<{ items?: BoqItem[]; fallbackItems?: BoqItem[]; warning?: string; error?: string }>("/api/ai/extract-boq-pdf", file);
+        const rows = rowsFromBoqItems(result.items ?? result.fallbackItems ?? []);
+        stageBoqReview({ sourceName: file.name, sourceType: "pdf-text", rows });
+        setMessage(result.warning ?? `Text extracted ${rows.length} BOQ rows from ${file.name}. PDF vision rendering was unavailable: ${cleanErrorText(renderError instanceof Error ? renderError.message : "unknown error")}`);
+        return;
+      }
       try {
         const result = await fetchJsonWithTimeout<{ rows?: Record<string, unknown>[]; items?: BoqItem[]; warning?: string }>("/api/ai/extract-pdf-vision", {
           method: "POST",
@@ -2004,8 +2013,8 @@ async function postFile<T>(url: string, file: File): Promise<T> {
 
 async function readBoqRowsForMapping(file: File): Promise<Record<string, unknown>[]> {
   const name = file.name.toLowerCase();
-  if (name.endsWith(".csv")) return rowsFromCsvText(await file.text());
-  if (name.endsWith(".xlsx") || name.endsWith(".xls")) return rowsFromWorkbookBuffer(new Uint8Array(await file.arrayBuffer()));
+  if (name.endsWith(".csv")) return rowsFromBoqCsv(await file.text());
+  if (name.endsWith(".xlsx") || name.endsWith(".xls")) return rowsFromBoqWorkbook(new Uint8Array(await file.arrayBuffer()));
   throw new Error("Supported BOQ formats are CSV, XLSX, and XLS.");
 }
 
@@ -2013,17 +2022,19 @@ async function renderPdfPageImages(file: File): Promise<PdfPageImage[]> {
   const pdfjsLib = await loadPdfJs();
   const pdf = await pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise;
   const pages: PdfPageImage[] = [];
-  const maxPages = Math.min(pdf.numPages, 8);
+  const maxPages = Math.min(pdf.numPages, 4);
   for (let pageNo = 1; pageNo <= maxPages; pageNo += 1) {
     const page = await pdf.getPage(pageNo);
-    const viewport = page.getViewport({ scale: 1.05 });
+    const viewport = page.getViewport({ scale: 0.9 });
     const canvas = document.createElement("canvas");
-    canvas.width = Math.floor(viewport.width);
-    canvas.height = Math.floor(viewport.height);
+    const maxWidth = 1100;
+    const shrink = viewport.width > maxWidth ? maxWidth / viewport.width : 1;
+    canvas.width = Math.floor(viewport.width * shrink);
+    canvas.height = Math.floor(viewport.height * shrink);
     const context = canvas.getContext("2d");
     if (!context) continue;
-    await page.render({ canvasContext: context, viewport }).promise;
-    pages.push({ page: pageNo, base64: canvas.toDataURL("image/jpeg", 0.68).split(",")[1] ?? "", mimeType: "image/jpeg" });
+    await page.render({ canvasContext: context, viewport: page.getViewport({ scale: 0.9 * shrink }) }).promise;
+    pages.push({ page: pageNo, base64: canvas.toDataURL("image/jpeg", 0.52).split(",")[1] ?? "", mimeType: "image/jpeg" });
   }
   if (!pages.length) throw new Error("Could not render PDF pages for vision extraction.");
   return pages;
@@ -2209,8 +2220,11 @@ async function fetchJsonWithTimeout<T>(url: string, init: RequestInit, timeoutMs
   const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetch(url, { ...init, signal: controller.signal });
-    const body = (await response.json()) as T & { error?: string };
-    if (!response.ok) throw new Error(body.error ?? "Request failed.");
+    const contentType = response.headers.get("content-type") ?? "";
+    const body = contentType.includes("application/json")
+      ? ((await response.json()) as T & { error?: string })
+      : ({ error: await response.text() } as T & { error?: string });
+    if (!response.ok) throw new Error(cleanErrorText(body.error ?? "Request failed."));
     return body;
   } finally {
     window.clearTimeout(timeout);

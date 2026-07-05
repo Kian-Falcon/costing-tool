@@ -44,12 +44,20 @@ export function parseBoqCsv(csv: string): BoqItem[] {
 }
 
 export function parseBoqWorkbook(buffer: ArrayBuffer | Buffer | Uint8Array): BoqItem[] {
+  return parseBoqRows(rowsFromBoqWorkbook(buffer));
+}
+
+export function rowsFromBoqCsv(csv: string): Record<string, unknown>[] {
+  return rowsFromCsvText(csv);
+}
+
+export function rowsFromBoqWorkbook(buffer: ArrayBuffer | Buffer | Uint8Array): Record<string, unknown>[] {
   const workbook = XLSX.read(buffer, { type: "buffer", cellDates: false });
   const sheet = workbook.Sheets[pickBoqSheet(workbook)];
   const table = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, defval: "", blankrows: false });
   const headerIndex = findBoqHeaderIndex(table);
-  if (headerIndex >= 0) return parseBoqRows(rowsFromHeaderTable(table, headerIndex));
-  return parseBoqRows(rowsFromWorkbookBuffer(buffer));
+  if (headerIndex >= 0) return rowsFromHeaderTable(table, headerIndex);
+  return rowsFromWorkbookBuffer(buffer);
 }
 
 function rowsFromHeaderTable(table: unknown[][], headerIndex: number): Record<string, unknown>[] {
@@ -69,9 +77,11 @@ function findBoqHeaderIndex(table: unknown[][]): number {
   return table.findIndex((row) => {
     const headers = row.map((cell) => String(cell ?? "").toLowerCase().replace(/[^a-z0-9]+/g, ""));
     const hasCode = headers.some((header) => header === "code" || header === "itemcode" || header === "sr");
+    const hasName = headers.some((header) => /productname|itemname|article|description|particulars/.test(header));
+    const hasDims = headers.some((header) => /dimension|size|lxwxh|wdh/.test(header));
     const hasSpec = headers.some((header) => /specification|description|particulars/.test(header));
     const hasQty = headers.some((header) => header === "qty" || header === "quantity" || header === "nos");
-    return hasCode && (hasSpec || hasQty);
+    return (hasCode || hasName) && (hasSpec || hasQty || hasDims);
   });
 }
 
