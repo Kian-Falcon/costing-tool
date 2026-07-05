@@ -40,7 +40,7 @@ function cryptoSafeId(index: number): string {
 }
 
 export function parseBoqCsv(csv: string): BoqItem[] {
-  return parseBoqRows(rowsFromCsvText(csv));
+  return parseBoqRows(rowsFromBoqCsv(csv));
 }
 
 export function parseBoqWorkbook(buffer: ArrayBuffer | Buffer | Uint8Array): BoqItem[] {
@@ -48,6 +48,11 @@ export function parseBoqWorkbook(buffer: ArrayBuffer | Buffer | Uint8Array): Boq
 }
 
 export function rowsFromBoqCsv(csv: string): Record<string, unknown>[] {
+  const workbook = XLSX.read(csv, { type: "string" });
+  const sheet = workbook.Sheets[workbook.SheetNames[0]];
+  const table = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, defval: "", blankrows: false });
+  const headerIndex = findBoqHeaderIndex(table);
+  if (headerIndex >= 0) return rowsFromHeaderTable(table, headerIndex);
   return rowsFromCsvText(csv);
 }
 

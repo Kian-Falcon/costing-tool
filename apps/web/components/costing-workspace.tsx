@@ -237,26 +237,36 @@ export function CostingWorkspace({ initialView = "workspace", showCommandCenter 
 
   async function importTraining(file: File) {
     setBusy("training");
-    const result = await postFile<{ sourceFile: string; products: CorpusProduct[]; rowsRead: number; rowsImported: number; rowsSkipped: number }>("/api/imports/master-costing", file);
-    setImports((current) => ({
-      ...current,
-      corpus: result.products,
-      trainingRows: result.rowsRead,
-      trainingSourceStats: [{ sourceFile: result.sourceFile, rowsRead: result.rowsRead, rowsImported: result.rowsImported, rowsSkipped: result.rowsSkipped }]
-    }));
-    setMessage(`Imported ${result.rowsImported} corpus products from ${file.name}.`);
-    void saveTrainingSource(result.sourceFile, result.rowsRead, result.products);
-    setBusy(null);
+    try {
+      const result = await postFile<{ sourceFile: string; products: CorpusProduct[]; rowsRead: number; rowsImported: number; rowsSkipped: number }>("/api/imports/master-costing", file);
+      setImports((current) => ({
+        ...current,
+        corpus: result.products,
+        trainingRows: result.rowsRead,
+        trainingSourceStats: [{ sourceFile: result.sourceFile, rowsRead: result.rowsRead, rowsImported: result.rowsImported, rowsSkipped: result.rowsSkipped }]
+      }));
+      setMessage(`Imported ${result.rowsImported} corpus products from ${file.name}.`);
+      void saveTrainingSource(result.sourceFile, result.rowsRead, result.products);
+    } catch (error) {
+      setMessage(error instanceof Error ? cleanErrorText(error.message) : "Training import failed.");
+    } finally {
+      setBusy(null);
+    }
   }
 
   async function importRates(file: File) {
     setBusy("rates");
-    const result = await postFile<{ rates: RateItem[]; vendors: VendorLink[]; rowsRead: number; rowsImported: number }>("/api/imports/rm-rates", file);
-    setImports((current) => ({ ...current, rates: result.rates, vendors: result.vendors, rateRows: result.rowsRead }));
-    setMessage(`Imported ${result.rowsImported} rate keys and ${result.vendors.length} vendor/material links.`);
-    void saveRates(result.rates);
-    void saveVendors(result.vendors);
-    setBusy(null);
+    try {
+      const result = await postFile<{ rates: RateItem[]; vendors: VendorLink[]; rowsRead: number; rowsImported: number }>("/api/imports/rm-rates", file);
+      setImports((current) => ({ ...current, rates: result.rates, vendors: result.vendors, rateRows: result.rowsRead }));
+      setMessage(`Imported ${result.rowsImported} rate keys and ${result.vendors.length} vendor/material links.`);
+      void saveRates(result.rates);
+      void saveVendors(result.vendors);
+    } catch (error) {
+      setMessage(error instanceof Error ? cleanErrorText(error.message) : "Rate import failed.");
+    } finally {
+      setBusy(null);
+    }
   }
 
   async function uploadBoq(file: File) {
@@ -363,6 +373,7 @@ export function CostingWorkspace({ initialView = "workspace", showCommandCenter 
           body: JSON.stringify({ mode: "boq", filename: file.name, pageImages })
         }, 120000);
         const rows = await attachVisionImages(result.rows?.length ? result.rows : rowsFromBoqItems(result.items ?? []), pageImages);
+        if (!rows.length) throw new Error("Vision extraction returned no BOQ rows.");
         stageBoqReview({ sourceName: file.name, sourceType: "pdf-vision", rows, pageImages });
         setMessage(`Vision extracted ${rows.length} BOQ rows from ${file.name}. Review mapping, then process.`);
       } catch (visionError) {
@@ -391,6 +402,7 @@ export function CostingWorkspace({ initialView = "workspace", showCommandCenter 
           body: JSON.stringify({ mode, filename: file.name, pageImages })
         }, 120000);
         sections = result.sections ?? [];
+        if (!sections.length) throw new Error("Vision extraction returned no rows.");
       } catch (visionError) {
         const form = new FormData();
         form.append("file", file);
@@ -415,15 +427,20 @@ export function CostingWorkspace({ initialView = "workspace", showCommandCenter 
 
   async function costAll() {
     setBusy("cost");
-    const cleanItems = sanitizeBoqItems(items);
-    if (cleanItems.length !== items.length) {
-      setItems(cleanItems);
-      setSelectedItemId(cleanItems[0]?.id ?? null);
+    try {
+      const cleanItems = sanitizeBoqItems(items);
+      if (cleanItems.length !== items.length) {
+        setItems(cleanItems);
+        setSelectedItemId(cleanItems[0]?.id ?? null);
+      }
+      const result = await costItems(cleanItems);
+      setCosted(result.items);
+      setMessage(`Costed ${result.items.length} rows using ${result.meta.modelCount} models and ${result.meta.ratioNormCount} ratio norms.`);
+    } catch (error) {
+      setMessage(error instanceof Error ? `Costing failed: ${cleanErrorText(error.message)}` : "Costing failed.");
+    } finally {
+      setBusy(null);
     }
-    const result = await costItems(cleanItems);
-    setCosted(result.items);
-    setMessage(`Costed ${result.items.length} rows using ${result.meta.modelCount} models and ${result.meta.ratioNormCount} ratio norms.`);
-    setBusy(null);
   }
 
   function pushCostedToPi() {
@@ -454,13 +471,20 @@ export function CostingWorkspace({ initialView = "workspace", showCommandCenter 
     }
     const updatedItems = items.map((item) => ({ ...item, margin: globalMargin }));
     setItems(updatedItems);
+    let recostFailed = false;
     if (costed.length) {
       setBusy("margin");
-      const result = await costItems(updatedItems);
-      setCosted(result.items);
-      setBusy(null);
+      try {
+        const result = await costItems(updatedItems);
+        setCosted(result.items);
+      } catch (error) {
+        recostFailed = true;
+        setMessage(error instanceof Error ? `Margin applied, but re-cost failed: ${cleanErrorText(error.message)}` : "Margin applied, but re-cost failed.");
+      } finally {
+        setBusy(null);
+      }
     }
-    setMessage(`Applied ${globalMargin}% margin to ${updatedItems.length} BOQ rows.`);
+    if (!recostFailed) setMessage(`Applied ${globalMargin}% margin to ${updatedItems.length} BOQ rows.`);
   }
 
   function updatePiItem(itemId: string, patch: Partial<PiItem>) {
@@ -480,10 +504,15 @@ export function CostingWorkspace({ initialView = "workspace", showCommandCenter 
 
   async function recostItem(item: BoqItem) {
     setBusy(`cost:${item.id}`);
-    const result = await costItems([item]);
-    setCosted((current) => [...current.filter((row) => row.item.id !== item.id), result.items[0]]);
-    setMessage(`Recosted ${item.name}.`);
-    setBusy(null);
+    try {
+      const result = await costItems([item]);
+      setCosted((current) => [...current.filter((row) => row.item.id !== item.id), result.items[0]]);
+      setMessage(`Recosted ${item.name}.`);
+    } catch (error) {
+      setMessage(error instanceof Error ? `Re-cost failed: ${cleanErrorText(error.message)}` : "Re-cost failed.");
+    } finally {
+      setBusy(null);
+    }
   }
 
   async function aiCostItem(item: BoqItem, provider: "openai" | "anthropic") {
@@ -511,7 +540,9 @@ export function CostingWorkspace({ initialView = "workspace", showCommandCenter 
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ items: inputItems, rates: rateList, corpus: imports.corpus, models, ratioNorms })
     });
-    return (await response.json()) as { items: CostedRow[]; meta: { modelCount: number; ratioNormCount: number } };
+    const body = await response.json() as { items?: CostedRow[]; meta?: { modelCount: number; ratioNormCount: number }; error?: string };
+    if (!response.ok || !body.items || !body.meta) throw new Error(body.error ?? "Costing request failed.");
+    return body as { items: CostedRow[]; meta: { modelCount: number; ratioNormCount: number } };
   }
 
   function updateItem(itemId: string, patch: Partial<BoqItem>, options: { keepCosted?: boolean; result?: CostResult } = {}) {
@@ -1155,6 +1186,7 @@ function BoqMappingReview({
   onProcess: () => void;
   onCancel: () => void;
 }) {
+  const canProcess = Boolean(review.mapping.name || review.mapping.spec) && Boolean(review.mapping.qty || review.rows.length);
   const fields: Array<{ key: BoqColumnKey; label: string; required?: boolean }> = [
     { key: "code", label: "Code" },
     { key: "name", label: "Product Name", required: true },
@@ -1183,7 +1215,7 @@ function BoqMappingReview({
             {busy === "boq-enrich" ? <Loader2 className="animate-spin" size={15} /> : <Library size={15} />}
             AI enrich specs
           </button>
-          <button onClick={onProcess} className="btn-primary">
+          <button disabled={!canProcess} onClick={onProcess} className="btn-primary disabled:border-slate-300 disabled:bg-slate-300 disabled:shadow-none">
             Process BOQ
           </button>
           <button onClick={onCancel} className="btn-secondary">
@@ -2007,7 +2039,7 @@ async function postFile<T>(url: string, file: File): Promise<T> {
   const body = new FormData();
   body.append("file", file);
   const response = await fetch(url, { method: "POST", body });
-  if (!response.ok) throw new Error(await response.text());
+  if (!response.ok) throw new Error(cleanErrorText(await response.text()));
   return (await response.json()) as T;
 }
 
