@@ -24,29 +24,40 @@ export async function POST(request: Request) {
     const user = await requireUser();
     requireRole(user, "MEMBER");
     const body = requestSchema.parse(await request.json());
-    const job = await startExportJob("pi", body.format, body.rows.length, user);
-    jobId = job.id;
+    try {
+      const job = await startExportJob("pi", body.format, body.rows.length, user);
+      jobId = job.id;
+    } catch {
+      // Export history is optional; the file download should still work.
+    }
 
     if (body.format === "pdf") {
       const buffer = await buildPiPdf(body.rows, body.meta);
-      const file = await storeExportOutput({ user, filename: "proforma-invoice.pdf", contentType: "application/pdf", body: buffer });
-      await completeExportJob(job.id, file.storageKey, file.id);
-      return fileResponse(buffer, "application/pdf", "proforma-invoice.pdf", job.id);
+      await recordExportOutput(jobId, user, "proforma-invoice.pdf", "application/pdf", buffer);
+      return fileResponse(buffer, "application/pdf", "proforma-invoice.pdf", jobId ?? "direct");
     }
 
     if (body.format === "csv") {
       const csv = buildPiCsv(body.rows);
-      const file = await storeExportOutput({ user, filename: "proforma-invoice.csv", contentType: "text/csv; charset=utf-8", body: csv });
-      await completeExportJob(job.id, file.storageKey, file.id);
-      return fileResponse(csv, "text/csv; charset=utf-8", "proforma-invoice.csv", job.id);
+      await recordExportOutput(jobId, user, "proforma-invoice.csv", "text/csv; charset=utf-8", csv);
+      return fileResponse(csv, "text/csv; charset=utf-8", "proforma-invoice.csv", jobId ?? "direct");
     }
 
     const buffer = buildPiXlsx(body.rows);
-    const file = await storeExportOutput({ user, filename: "proforma-invoice.xlsx", contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", body: buffer });
-    await completeExportJob(job.id, file.storageKey, file.id);
-    return fileResponse(buffer, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "proforma-invoice.xlsx", job.id);
+    await recordExportOutput(jobId, user, "proforma-invoice.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", buffer);
+    return fileResponse(buffer, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "proforma-invoice.xlsx", jobId ?? "direct");
   } catch (error) {
-    if (jobId) await failExportJob(jobId, error);
+    if (jobId) await failExportJob(jobId, error).catch(() => undefined);
     return authJsonError(error);
+  }
+}
+
+async function recordExportOutput(jobId: string | undefined, user: Awaited<ReturnType<typeof requireUser>>, filename: string, contentType: string, body: Buffer | string) {
+  if (!jobId) return;
+  try {
+    const file = await storeExportOutput({ user, filename, contentType, body });
+    await completeExportJob(jobId, file.storageKey, file.id);
+  } catch {
+    // Storage is useful for history, but should not block a generated download.
   }
 }

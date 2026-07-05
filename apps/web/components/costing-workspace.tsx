@@ -723,27 +723,35 @@ export function CostingWorkspace({ initialView = "workspace", showCommandCenter 
 
   async function exportFile(kind: "client-quotation" | "internal-costing" | "pi", format: ExportFormat) {
     const exportRows = kind === "pi" && piItems.length ? piItemsToCostedRows(piItems) : costed;
-    setBusy(`${kind}-${format}`);
-    const response = await fetch(`/api/exports/${kind}`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ rows: exportRows, format, meta: { projectName, clientName } })
-    });
-    if (!response.ok) {
-      setBusy(null);
-      setMessage("Export failed. Check the export history and server logs.");
+    if (!exportRows.length) {
+      setMessage(kind === "pi" ? "Push costed BOQ rows to PI before exporting." : "Cost the BOQ before exporting.");
       return;
     }
-    const blob = await response.blob();
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = `${kind === "pi" ? "proforma-invoice" : kind}.${format}`;
-    anchor.click();
-    URL.revokeObjectURL(url);
-    await refreshExportJobs();
-    setMessage(`Exported ${kindLabel(kind)} ${format.toUpperCase()}.`);
-    setBusy(null);
+    setBusy(`${kind}-${format}`);
+    try {
+      const response = await fetch(`/api/exports/${kind}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ rows: exportRows, format, meta: { projectName, clientName } })
+      });
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(errorText || "Export failed.");
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `${kind === "pi" ? "proforma-invoice" : kind}.${format}`;
+      anchor.click();
+      URL.revokeObjectURL(url);
+      await refreshExportJobs();
+      setMessage(`Exported ${kindLabel(kind)} ${format.toUpperCase()}.`);
+    } catch (error) {
+      setMessage(error instanceof Error ? `Export failed: ${cleanErrorText(error.message)}` : "Export failed.");
+    } finally {
+      setBusy(null);
+    }
   }
 
   async function refreshExportJobs() {
@@ -910,80 +918,57 @@ export function CostingWorkspace({ initialView = "workspace", showCommandCenter 
 
   return (
     <section className="space-y-5">
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1.35fr)_minmax(360px,0.65fr)]">
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
         <div className="surface overflow-hidden">
           <div className="border-b border-slate-200 px-4 py-4 sm:px-5">
-            <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
               <div>
                 <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">BOQ Workspace</div>
                 <h2 className="mt-1 text-2xl font-semibold tracking-tight text-ink">Upload, extract, cost</h2>
                 <p className="mt-1 max-w-2xl text-sm text-slate-500">{message}</p>
               </div>
-              <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-medium text-slate-500">
-                {lastSaved ? `Autosaved ${new Date(lastSaved).toLocaleString("en-IN")}` : "Autosave ready"}
-              </div>
+              <button onClick={() => setActiveView("pi")} className="btn-secondary">
+                <FileUp size={15} />
+                PI workspace
+              </button>
             </div>
           </div>
 
-          <div className="grid gap-5 p-4 sm:p-5 lg:grid-cols-[minmax(0,1fr)_320px]">
-            <div className="grid gap-4">
-              <div className="grid gap-3 sm:grid-cols-2">
-                <TextInput label="Project" value={projectName} onChange={setProjectName} />
-                <TextInput label="Client" value={clientName} onChange={setClientName} />
-              </div>
-
-              <div className="grid gap-3 rounded-md border border-slate-200 bg-slate-50 p-3 sm:grid-cols-2">
-                <UploadButton label="Upload BOQ" busy={busy === "boq"} accept=".csv,.xlsx,.xls" onFile={uploadBoq} />
-                <UploadButton label="Extract BOQ PDF" busy={busy === "pdf"} accept=".pdf" onFile={uploadBoqPdf} />
-              </div>
-
-              <div className="grid gap-3 rounded-md border border-slate-200 bg-white p-3 lg:grid-cols-[1fr_auto_auto_auto] lg:items-end">
-                <label className="grid gap-1 text-xs font-medium text-slate-600">
-                  Margin for costing
-                  <select value={globalMargin} onChange={(event) => setGlobalMargin(Number(event.target.value))} className="field">
-                    {[0, 20, 25, 30, 35, 40, 45, 50].map((margin) => (
-                      <option key={margin} value={margin}>
-                        {margin}%
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <button type="button" disabled={!items.length || busy === "margin"} onClick={applyGlobalMargin} className="btn-secondary disabled:text-slate-300">
-                  {busy === "margin" ? <Loader2 className="animate-spin" size={15} /> : <Percent size={15} />}
-                  Apply margin
-                </button>
-                <button type="button" disabled={!items.length || busy === "cost"} onClick={costAll} className="btn-primary disabled:border-slate-300 disabled:bg-slate-300 disabled:shadow-none">
-                  {busy === "cost" ? <Loader2 className="animate-spin" size={16} /> : <Calculator size={16} />}
-                  Cost BOQ
-                </button>
-                <button type="button" disabled={!costed.length} onClick={pushCostedToPi} className="btn-secondary disabled:text-slate-300">
-                  <FileUp size={15} />
-                  Push to PI
-                </button>
-              </div>
+          <div className="grid gap-4 p-4 sm:p-5">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <TextInput label="Project" value={projectName} onChange={setProjectName} />
+              <TextInput label="Client" value={clientName} onChange={setClientName} />
             </div>
 
-            <div className="grid content-start gap-3">
-              <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-3 text-sm text-emerald-900">
-                <div className="font-semibold">Libraries ready</div>
-                <div className="mt-1 text-xs leading-5 text-emerald-800">Embedded training and RM rates are available automatically. Update them from their own tabs only when needed.</div>
-              </div>
-              <div className="grid grid-cols-2 gap-2">
-                <Stat label="BOQ rows" value={items.length} />
-                <Stat label="Costed" value={costed.length} />
-                <Stat label="PI rows" value={piItems.length} />
-                <Stat label="Rates" value={imports.rates.length} />
-              </div>
-              <div className="grid grid-cols-2 gap-2">
-                <button onClick={saveProject} className="btn-secondary">
-                  <Save size={15} />
-                  Archive
-                </button>
-                <button onClick={() => setActiveView("exports")} className="btn-secondary">
-                  <Download size={15} />
-                  Exports
-                </button>
-              </div>
+            <div className="grid gap-3 rounded-md border border-slate-200 bg-slate-50 p-3 sm:grid-cols-2">
+              <UploadButton label="Upload BOQ" busy={busy === "boq"} accept=".csv,.xlsx,.xls" onFile={uploadBoq} />
+              <UploadButton label="Extract BOQ PDF" busy={busy === "pdf"} accept=".pdf" onFile={uploadBoqPdf} />
+            </div>
+
+            <div className="grid gap-3 rounded-md border border-slate-200 bg-white p-3 md:grid-cols-[160px_1fr_1fr] md:items-end">
+              <label className="grid gap-1 text-xs font-medium text-slate-600">
+                Margin
+                <select value={globalMargin} onChange={(event) => setGlobalMargin(Number(event.target.value))} className="field">
+                  {[0, 20, 25, 30, 35, 40, 45, 50].map((margin) => (
+                    <option key={margin} value={margin}>
+                      {margin}%
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <button type="button" disabled={!items.length || busy === "margin"} onClick={applyGlobalMargin} className="btn-secondary disabled:text-slate-300">
+                {busy === "margin" ? <Loader2 className="animate-spin" size={15} /> : <Percent size={15} />}
+                Apply margin
+              </button>
+              <button type="button" disabled={!items.length || busy === "cost"} onClick={costAll} className="btn-primary disabled:border-slate-300 disabled:bg-slate-300 disabled:shadow-none">
+                {busy === "cost" ? <Loader2 className="animate-spin" size={16} /> : <Calculator size={16} />}
+                Cost BOQ
+              </button>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
+              <span>{items.length} BOQ rows · {costed.length} costed · {piItems.length} PI rows</span>
+              <span>{lastSaved ? `Autosaved ${new Date(lastSaved).toLocaleString("en-IN")}` : "Autosave ready"}</span>
             </div>
           </div>
         </div>
@@ -1916,6 +1901,15 @@ function piItemsToCostedRows(items: PiItem[]): CostedRow[] {
 function numericInput(value: unknown): number {
   if (typeof value === "number") return Number.isFinite(value) ? value : 0;
   return Number(String(value ?? "").replace(/,/g, "").replace(/[^0-9.-]/g, "")) || 0;
+}
+
+function cleanErrorText(value: string): string {
+  try {
+    const parsed = JSON.parse(value) as { error?: string };
+    return parsed.error || value;
+  } catch {
+    return value.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 220);
+  }
 }
 
 function sanitizeBoqItems(items: BoqItem[]): BoqItem[] {
