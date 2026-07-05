@@ -13,6 +13,29 @@ type CostedRow = {
   result: CostResult;
 };
 
+type PiItem = {
+  id: string;
+  code: string;
+  name: string;
+  dims: string;
+  spec: string;
+  qty: number;
+  unitPrice: number;
+  source: "boq" | "spec-book" | "pi-pdf" | "manual";
+};
+
+type ExtractedSpecRow = {
+  section?: string;
+  itemCode?: string;
+  itemName?: string;
+  dimensions?: string;
+  specification?: string;
+  finish?: string;
+  quantity?: number | string;
+  unit?: string;
+  amount?: number | string;
+};
+
 type VendorLink = {
   name: string;
   materialName: string;
@@ -45,6 +68,7 @@ type WorkspaceSnapshot = {
   imports: ImportState;
   items: BoqItem[];
   costed: CostedRow[];
+  piItems: PiItem[];
   message: string;
 };
 
@@ -70,7 +94,7 @@ type ExportJob = {
   updatedAt: string;
 };
 
-type ActiveView = "workspace" | "projects" | "rates" | "vendors" | "training" | "models" | "exports" | "editor";
+type ActiveView = "workspace" | "projects" | "rates" | "vendors" | "training" | "models" | "exports" | "editor" | "pi";
 
 const SNAPSHOT_KEY = "kf-costing-workspace-v2";
 const ARCHIVE_KEY = "kf-costing-project-archive-v1";
@@ -91,6 +115,7 @@ export function CostingWorkspace({ initialView = "workspace", showCommandCenter 
   const [imports, setImports] = useState<ImportState>(EMPTY_IMPORTS);
   const [items, setItems] = useState<BoqItem[]>([]);
   const [costed, setCosted] = useState<CostedRow[]>([]);
+  const [piItems, setPiItems] = useState<PiItem[]>([]);
   const [projects, setProjects] = useState<ProjectArchive[]>([]);
   const [exportJobs, setExportJobs] = useState<ExportJob[]>([]);
   const [activeView, setActiveView] = useState<ActiveView>(initialView);
@@ -151,7 +176,7 @@ export function CostingWorkspace({ initialView = "workspace", showCommandCenter 
 
   useEffect(() => {
     if (!hydrated.current) return;
-    const snapshot = buildSnapshot({ projectName, clientName, imports, items, costed, message });
+    const snapshot = buildSnapshot({ projectName, clientName, imports, items, costed, piItems, message });
     const id = window.setTimeout(() => {
       try {
         window.localStorage.setItem(SNAPSHOT_KEY, JSON.stringify(snapshot));
@@ -161,7 +186,7 @@ export function CostingWorkspace({ initialView = "workspace", showCommandCenter 
       }
     }, 300);
     return () => window.clearTimeout(id);
-  }, [projectName, clientName, imports, items, costed, message]);
+  }, [projectName, clientName, imports, items, costed, piItems, message]);
 
   useEffect(() => {
     if (!hydrated.current) return;
@@ -227,6 +252,7 @@ export function CostingWorkspace({ initialView = "workspace", showCommandCenter 
     setItems(cleanItems);
     setSelectedItemId(cleanItems[0]?.id ?? null);
     setCosted([]);
+    setPiItems([]);
     setProjectName(file.name.replace(/\.[^.]+$/, ""));
   }
 
@@ -238,6 +264,7 @@ export function CostingWorkspace({ initialView = "workspace", showCommandCenter 
       setItems(extracted);
       setSelectedItemId(extracted[0]?.id ?? null);
       setCosted([]);
+      setPiItems([]);
       setProjectName(file.name.replace(/\.[^.]+$/, ""));
       setMessage(result.warning ?? `Extracted ${extracted.length} BOQ rows from ${file.name}.`);
     } catch (error) {
@@ -254,10 +281,13 @@ export function CostingWorkspace({ initialView = "workspace", showCommandCenter 
       form.append("file", file);
       form.append("mode", mode);
       const response = await fetch("/api/ai/extract-spec-pdf", { method: "POST", body: form });
-      const result = (await response.json()) as { sections?: unknown[]; fallbackSections?: unknown[]; warning?: string; error?: string };
+      const result = (await response.json()) as { sections?: ExtractedSpecRow[]; fallbackSections?: ExtractedSpecRow[]; warning?: string; error?: string };
       const sections = result.sections ?? result.fallbackSections ?? [];
       if (!response.ok && !sections.length) throw new Error(result.error ?? "Could not extract PDF.");
-      setMessage(result.warning ?? `Extracted ${sections.length} ${mode === "pi" ? "PI" : "spec"} rows from ${file.name}. The original PDF and extraction job were stored.`);
+      const extractedPiItems = piItemsFromExtractedSections(sections, mode === "pi" ? "pi-pdf" : "spec-book");
+      setPiItems(extractedPiItems);
+      setActiveView("pi");
+      setMessage(result.warning ?? `Extracted ${extractedPiItems.length} ${mode === "pi" ? "PI" : "spec book"} rows from ${file.name}. Review prices, then export PI.`);
       await refreshExportJobs();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Could not extract PDF.");
@@ -279,6 +309,27 @@ export function CostingWorkspace({ initialView = "workspace", showCommandCenter 
     setBusy(null);
   }
 
+  function pushCostedToPi() {
+    if (!costed.length) {
+      setMessage("Cost the BOQ first, then push it to the PI table.");
+      return;
+    }
+    const codePrefix = (projectName || "KF").replace(/[^a-z0-9-]/gi, "").toUpperCase().slice(0, 8) || "KF";
+    const nextPiItems = costed.map(({ item, result }, index) => ({
+      id: `pi_${item.id}_${index}`,
+      code: item.code || `${codePrefix}-${String(index + 1).padStart(3, "0")}`,
+      name: item.name || "Item",
+      dims: item.dims || "",
+      spec: (item.aiSpec || item.spec || "").slice(0, 320),
+      qty: item.qty || 1,
+      unitPrice: Math.round(result.sell || 0),
+      source: "boq" as const
+    }));
+    setPiItems(nextPiItems);
+    setActiveView("pi");
+    setMessage(`Pushed ${nextPiItems.length} costed BOQ rows to the PI table. Review rows, then export PI.`);
+  }
+
   async function applyGlobalMargin() {
     if (!items.length) {
       setMessage("Upload a BOQ before applying a global margin.");
@@ -293,6 +344,21 @@ export function CostingWorkspace({ initialView = "workspace", showCommandCenter 
       setBusy(null);
     }
     setMessage(`Applied ${globalMargin}% margin to ${updatedItems.length} BOQ rows.`);
+  }
+
+  function updatePiItem(itemId: string, patch: Partial<PiItem>) {
+    setPiItems((current) => current.map((item) => (item.id === itemId ? { ...item, ...patch } : item)));
+  }
+
+  function addPiItem() {
+    setPiItems((current) => [
+      ...current,
+      { id: `pi_manual_${Date.now()}`, code: "", name: "New item", dims: "", spec: "", qty: 1, unitPrice: 0, source: "manual" }
+    ]);
+  }
+
+  function removePiItem(itemId: string) {
+    setPiItems((current) => current.filter((item) => item.id !== itemId));
   }
 
   async function recostItem(item: BoqItem) {
@@ -477,7 +543,7 @@ export function CostingWorkspace({ initialView = "workspace", showCommandCenter 
   }
 
   async function saveProject() {
-    const snapshot = buildSnapshot({ projectName, clientName, imports, items, costed, message });
+    const snapshot = buildSnapshot({ projectName, clientName, imports, items, costed, piItems, message });
     const archive: ProjectArchive = {
       id: snapshot.id,
       name: projectName,
@@ -617,7 +683,7 @@ export function CostingWorkspace({ initialView = "workspace", showCommandCenter 
   }
 
   function exportSnapshot() {
-    const snapshot = buildSnapshot({ projectName, clientName, imports, items, costed, message });
+    const snapshot = buildSnapshot({ projectName, clientName, imports, items, costed, piItems, message });
     downloadBlob(JSON.stringify(snapshot, null, 2), `${slug(projectName)}-snapshot.json`, "application/json");
     window.localStorage.setItem(SNAPSHOT_KEY, JSON.stringify(snapshot));
     setLastSaved(snapshot.savedAt);
@@ -649,17 +715,19 @@ export function CostingWorkspace({ initialView = "workspace", showCommandCenter 
     setImports(EMPTY_IMPORTS);
     setItems([]);
     setCosted([]);
+    setPiItems([]);
     setSelectedItemId(null);
     setLastSaved(null);
     setMessage("Saved workspace cleared.");
   }
 
   async function exportFile(kind: "client-quotation" | "internal-costing" | "pi", format: ExportFormat) {
+    const exportRows = kind === "pi" && piItems.length ? piItemsToCostedRows(piItems) : costed;
     setBusy(`${kind}-${format}`);
     const response = await fetch(`/api/exports/${kind}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ rows: costed, format, meta: { projectName, clientName } })
+      body: JSON.stringify({ rows: exportRows, format, meta: { projectName, clientName } })
     });
     if (!response.ok) {
       setBusy(null);
@@ -698,6 +766,7 @@ export function CostingWorkspace({ initialView = "workspace", showCommandCenter 
     setImports(snapshot.imports);
     setItems(cleanItems);
     setCosted(cleanCosted);
+    setPiItems(snapshot.piItems ?? []);
     setSelectedItemId(cleanItems[0]?.id ?? null);
     setMessage(snapshot.message || "Restored saved workspace.");
     setLastSaved(snapshot.savedAt);
@@ -707,7 +776,7 @@ export function CostingWorkspace({ initialView = "workspace", showCommandCenter 
     <div className="grid gap-3">
       <ExportButtonRow title="Client quotation" disabled={!costed.length} busy={busy} kind="client-quotation" formats={["csv", "xlsx", "pdf"]} onExport={exportFile} />
       <ExportButtonRow title="Internal costing" disabled={!costed.length} busy={busy} kind="internal-costing" formats={["csv", "xlsx", "pdf"]} onExport={exportFile} />
-      <ExportButtonRow title="PI" disabled={!costed.length} busy={busy} kind="pi" formats={["xlsx", "pdf"]} onExport={exportFile} />
+      <ExportButtonRow title="PI" disabled={!piItems.length && !costed.length} busy={busy} kind="pi" formats={["xlsx", "pdf"]} onExport={exportFile} />
       <div className="grid gap-2 rounded-md border border-slate-200 bg-white p-3">
         <div className="text-xs font-semibold uppercase text-slate-500">PDF extraction</div>
         <UploadButton label="Extract Spec Book" busy={busy === "spec-pdf"} accept=".pdf" onFile={(file) => uploadSpecPdf(file, "spec-book")} />
@@ -734,6 +803,7 @@ export function CostingWorkspace({ initialView = "workspace", showCommandCenter 
         ["vendors", "Vendors"],
         ["training", "Training"],
         ["models", "Models"],
+        ["pi", "PI"],
         ["exports", "Exports"],
         ["editor", "Row Editor"]
       ].map(([key, label]) => (
@@ -792,6 +862,19 @@ export function CostingWorkspace({ initialView = "workspace", showCommandCenter 
       {activeView === "training" && <TrainingDataView imports={imports} busy={busy === "training-reset"} onReset={resetEmbeddedTraining} />}
 
       {activeView === "models" && <ModelView models={models} ratioNorms={ratioNorms} />}
+
+      {activeView === "pi" && (
+        <PiWorkspace
+          items={piItems}
+          busy={busy}
+          canPush={Boolean(costed.length)}
+          onPush={pushCostedToPi}
+          onAdd={addPiItem}
+          onUpdate={updatePiItem}
+          onRemove={removePiItem}
+          onExport={exportFile}
+        />
+      )}
 
       {activeView === "exports" && (
         <Panel title="Exports" icon={<Download size={18} />}>
@@ -854,7 +937,7 @@ export function CostingWorkspace({ initialView = "workspace", showCommandCenter 
                 <UploadButton label="Extract BOQ PDF" busy={busy === "pdf"} accept=".pdf" onFile={uploadBoqPdf} />
               </div>
 
-              <div className="grid gap-3 rounded-md border border-slate-200 bg-white p-3 lg:grid-cols-[1fr_auto_auto] lg:items-end">
+              <div className="grid gap-3 rounded-md border border-slate-200 bg-white p-3 lg:grid-cols-[1fr_auto_auto_auto] lg:items-end">
                 <label className="grid gap-1 text-xs font-medium text-slate-600">
                   Margin for costing
                   <select value={globalMargin} onChange={(event) => setGlobalMargin(Number(event.target.value))} className="field">
@@ -873,6 +956,10 @@ export function CostingWorkspace({ initialView = "workspace", showCommandCenter 
                   {busy === "cost" ? <Loader2 className="animate-spin" size={16} /> : <Calculator size={16} />}
                   Cost BOQ
                 </button>
+                <button type="button" disabled={!costed.length} onClick={pushCostedToPi} className="btn-secondary disabled:text-slate-300">
+                  <FileUp size={15} />
+                  Push to PI
+                </button>
               </div>
             </div>
 
@@ -884,8 +971,8 @@ export function CostingWorkspace({ initialView = "workspace", showCommandCenter 
               <div className="grid grid-cols-2 gap-2">
                 <Stat label="BOQ rows" value={items.length} />
                 <Stat label="Costed" value={costed.length} />
+                <Stat label="PI rows" value={piItems.length} />
                 <Stat label="Rates" value={imports.rates.length} />
-                <Stat label="Corpus" value={imports.corpus.length} />
               </div>
               <div className="grid grid-cols-2 gap-2">
                 <button onClick={saveProject} className="btn-secondary">
@@ -1461,6 +1548,99 @@ function ModelView({ models, ratioNorms }: { models: TrainedModel[]; ratioNorms:
   );
 }
 
+function PiWorkspace({
+  items,
+  busy,
+  canPush,
+  onPush,
+  onAdd,
+  onUpdate,
+  onRemove,
+  onExport
+}: {
+  items: PiItem[];
+  busy: string | null;
+  canPush: boolean;
+  onPush: () => void;
+  onAdd: () => void;
+  onUpdate: (itemId: string, patch: Partial<PiItem>) => void;
+  onRemove: (itemId: string) => void;
+  onExport: (kind: "pi", format: ExportFormat) => void;
+}) {
+  const subtotal = items.reduce((total, item) => total + item.qty * item.unitPrice, 0);
+  return (
+    <Panel title="Spec Book & PI" icon={<FileUp size={18} />}>
+      <div className="mb-4 flex flex-col gap-3 rounded-md border border-slate-200 bg-slate-50 p-3 lg:flex-row lg:items-center lg:justify-between">
+        <div>
+          <div className="text-sm font-semibold text-ink">PI working table</div>
+          <div className="mt-1 text-xs text-slate-500">Push costed BOQ rows here or extract a spec/PI PDF. Review unit prices before export.</div>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <button disabled={!canPush} onClick={onPush} className="btn-secondary disabled:text-slate-300">
+            <FileUp size={15} />
+            Push costed BOQ
+          </button>
+          <button onClick={onAdd} className="btn-secondary">
+            Add row
+          </button>
+          <button disabled={!items.length || busy === "pi-xlsx"} onClick={() => onExport("pi", "xlsx")} className="btn-primary disabled:border-slate-300 disabled:bg-slate-300 disabled:shadow-none">
+            {busy === "pi-xlsx" ? <Loader2 className="animate-spin" size={15} /> : <Download size={15} />}
+            PI Excel
+          </button>
+          <button disabled={!items.length || busy === "pi-pdf"} onClick={() => onExport("pi", "pdf")} className="btn-primary disabled:border-slate-300 disabled:bg-slate-300 disabled:shadow-none">
+            {busy === "pi-pdf" ? <Loader2 className="animate-spin" size={15} /> : <Download size={15} />}
+            PI PDF
+          </button>
+        </div>
+      </div>
+
+      {items.length ? (
+        <div className="overflow-x-auto rounded-md border border-slate-200">
+          <table className="w-full min-w-[980px] text-left text-sm">
+            <thead className="table-head">
+              <tr>
+                <th className="px-3 py-2 font-medium">Code</th>
+                <th className="px-3 py-2 font-medium">Product</th>
+                <th className="px-3 py-2 font-medium">Dimensions</th>
+                <th className="px-3 py-2 font-medium">Specification</th>
+                <th className="px-3 py-2 font-medium">Qty</th>
+                <th className="px-3 py-2 font-medium">Unit Price</th>
+                <th className="px-3 py-2 font-medium">Total</th>
+                <th className="px-3 py-2 font-medium">Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((item) => (
+                <tr key={item.id} className="border-t border-slate-100 align-top hover:bg-slate-50/70">
+                  <td className="px-3 py-2"><input value={item.code} onChange={(event) => onUpdate(item.id, { code: event.target.value })} className="field px-2 py-1" /></td>
+                  <td className="px-3 py-2"><input value={item.name} onChange={(event) => onUpdate(item.id, { name: event.target.value })} className="field px-2 py-1" /></td>
+                  <td className="px-3 py-2"><input value={item.dims} onChange={(event) => onUpdate(item.id, { dims: event.target.value })} className="field px-2 py-1" /></td>
+                  <td className="px-3 py-2"><textarea value={item.spec} onChange={(event) => onUpdate(item.id, { spec: event.target.value })} rows={2} className="field px-2 py-1" /></td>
+                  <td className="px-3 py-2"><input type="number" value={item.qty} onChange={(event) => onUpdate(item.id, { qty: Number(event.target.value) || 1 })} className="field w-20 px-2 py-1" /></td>
+                  <td className="px-3 py-2"><input type="number" value={item.unitPrice} onChange={(event) => onUpdate(item.id, { unitPrice: Number(event.target.value) || 0 })} className="field w-28 px-2 py-1" /></td>
+                  <td className="px-3 py-2 font-semibold text-ink">{format(item.qty * item.unitPrice)}</td>
+                  <td className="px-3 py-2">
+                    <button onClick={() => onRemove(item.id)} className="btn-secondary min-h-0 px-2 py-1 text-xs">Remove</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+            <tfoot>
+              <tr className="border-t border-slate-200 bg-slate-50">
+                <td colSpan={6} className="px-3 py-3 text-right text-sm font-semibold text-ink">Subtotal</td>
+                <td className="px-3 py-3 text-sm font-semibold text-ink">{format(subtotal)}</td>
+                <td />
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      ) : (
+        <EmptyState title="No PI rows yet" text="Cost the BOQ and push it here, or extract a spec book / PI PDF from the Exports tab." />
+      )}
+    </Panel>
+  );
+}
+
 function ExportButtonRow({
   title,
   kind,
@@ -1636,6 +1816,7 @@ function buildSnapshot(input: {
   imports: ImportState;
   items: BoqItem[];
   costed: CostedRow[];
+  piItems: PiItem[];
   message: string;
 }): WorkspaceSnapshot {
   return {
@@ -1647,6 +1828,7 @@ function buildSnapshot(input: {
     imports: input.imports,
     items: input.items,
     costed: input.costed,
+    piItems: input.piItems,
     message: input.message
   };
 }
@@ -1673,8 +1855,67 @@ function normalizeSnapshot(raw: unknown): WorkspaceSnapshot {
     },
     items,
     costed: input.costed.filter((row) => itemIds.has(row.item.id) && !isCommercialBoqItem(row.item)),
+    piItems: Array.isArray(input.piItems) ? input.piItems : [],
     message: input.message ?? "Restored saved workspace."
   };
+}
+
+function piItemsFromExtractedSections(sections: ExtractedSpecRow[], source: PiItem["source"]): PiItem[] {
+  return sections.flatMap((section, index) => {
+    const name = String(section.itemName ?? "").trim();
+    const spec = [section.specification, section.finish].filter(Boolean).join(" | ").trim();
+    if (!name && !spec) return [];
+    const qty = numericInput(section.quantity) || 1;
+    const amount = numericInput(section.amount);
+    return [{
+      id: `pi_extract_${Date.now()}_${index}`,
+      code: String(section.itemCode ?? "").trim(),
+      name: name || spec.slice(0, 80) || `Item ${index + 1}`,
+      dims: String(section.dimensions ?? "").trim(),
+      spec,
+      qty,
+      unitPrice: amount && qty ? Math.round(amount / qty) : 0,
+      source
+    }];
+  });
+}
+
+function piItemsToCostedRows(items: PiItem[]): CostedRow[] {
+  return items.map((piItem, index) => {
+    const qty = piItem.qty || 1;
+    const unitPrice = piItem.unitPrice || 0;
+    const item: BoqItem = {
+      id: piItem.id,
+      code: piItem.code,
+      name: piItem.name || `Item ${index + 1}`,
+      ptype: "UNKNOWN",
+      dims: piItem.dims,
+      qty,
+      margin: 0,
+      spec: piItem.spec
+    };
+    return {
+      item,
+      result: {
+        raw: 0,
+        factory: unitPrice,
+        sell: unitPrice,
+        total: Math.round(unitPrice * qty),
+        confidence: 1,
+        source: piItem.source,
+        breakdown: [],
+        refs: [],
+        matchLevel: "catalog",
+        matchLabel: piItem.source === "boq" ? "Pushed from costed BOQ" : "PI table",
+        matchScore: 1
+      }
+    };
+  });
+}
+
+function numericInput(value: unknown): number {
+  if (typeof value === "number") return Number.isFinite(value) ? value : 0;
+  return Number(String(value ?? "").replace(/,/g, "").replace(/[^0-9.-]/g, "")) || 0;
 }
 
 function sanitizeBoqItems(items: BoqItem[]): BoqItem[] {
