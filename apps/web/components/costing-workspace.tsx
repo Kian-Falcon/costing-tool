@@ -1,7 +1,7 @@
 "use client";
 
-import { costItem, rebuildModelsFromCorpus, rebuildRatioNorms } from "@kf/costing-engine";
-import { parseBoqCsv, parseBoqWorkbook } from "@kf/importers";
+import { classify, costItem, inferCTFromSpec, rebuildModelsFromCorpus, rebuildRatioNorms } from "@kf/costing-engine";
+import { rowsFromCsvText, rowsFromWorkbookBuffer } from "@kf/importers";
 import type { AddedMaterial, BoqItem, CorpusProduct, CostResult, MaterialBreakdownLine, RateItem, RatioNorm, TrainedModel } from "@kf/shared";
 import { Calculator, Database, Download, FileUp, Library, Loader2, Percent, RotateCcw, Save, Trash2, UploadCloud } from "lucide-react";
 import type { ReactNode } from "react";
@@ -35,6 +35,44 @@ type ExtractedSpecRow = {
   unit?: string;
   amount?: number | string;
 };
+
+type BoqColumnKey = "code" | "name" | "dims" | "qty" | "spec" | "aiSpec" | "ct" | "rawMat" | "image" | "dimsSource";
+
+type BoqColumnMapping = Record<BoqColumnKey, string>;
+
+type PdfPageImage = {
+  page: number;
+  base64: string;
+  mimeType: string;
+};
+
+type PendingBoqReview = {
+  sourceName: string;
+  sourceType: "workbook" | "pdf-vision" | "pdf-text";
+  rows: Record<string, unknown>[];
+  headers: string[];
+  mapping: BoqColumnMapping;
+  pageImages?: PdfPageImage[];
+};
+
+type PdfJsLib = {
+  GlobalWorkerOptions: { workerSrc: string };
+  getDocument(input: { data: ArrayBuffer }): {
+    promise: Promise<{
+      numPages: number;
+      getPage(pageNumber: number): Promise<{
+        getViewport(input: { scale: number }): { width: number; height: number };
+        render(input: { canvasContext: CanvasRenderingContext2D; viewport: { width: number; height: number } }): { promise: Promise<void> };
+      }>;
+    }>;
+  };
+};
+
+declare global {
+  interface Window {
+    pdfjsLib?: PdfJsLib;
+  }
+}
 
 type VendorLink = {
   name: string;
@@ -98,7 +136,6 @@ type ActiveView = "workspace" | "projects" | "rates" | "vendors" | "training" | 
 
 const SNAPSHOT_KEY = "kf-costing-workspace-v2";
 const ARCHIVE_KEY = "kf-costing-project-archive-v1";
-const MAX_SERVER_BOQ_UPLOAD_BYTES = 4 * 1024 * 1024;
 const EMBEDDED_TRAINING_STATS: TrainingSourceStat[] = EMBEDDED_TRAINING_LIBRARY_META.sourceStats.map((source) => ({ ...source }));
 const EMPTY_IMPORTS: ImportState = {
   corpus: EMBEDDED_CORPUS_PRODUCTS,
@@ -116,6 +153,7 @@ export function CostingWorkspace({ initialView = "workspace", showCommandCenter 
   const [items, setItems] = useState<BoqItem[]>([]);
   const [costed, setCosted] = useState<CostedRow[]>([]);
   const [piItems, setPiItems] = useState<PiItem[]>([]);
+  const [pendingBoqReview, setPendingBoqReview] = useState<PendingBoqReview | null>(null);
   const [projects, setProjects] = useState<ProjectArchive[]>([]);
   const [exportJobs, setExportJobs] = useState<ExportJob[]>([]);
   const [activeView, setActiveView] = useState<ActiveView>(initialView);
@@ -224,22 +262,9 @@ export function CostingWorkspace({ initialView = "workspace", showCommandCenter 
   async function uploadBoq(file: File) {
     setBusy("boq");
     try {
-      if (file.size > MAX_SERVER_BOQ_UPLOAD_BYTES) {
-        const items = await parseBoqFileInBrowser(file);
-        applyLoadedBoq(file, items);
-        setMessage(`Loaded ${items.length} BOQ rows from ${file.name}. Large file parsed in browser; original file storage was skipped to avoid Vercel upload limits.`);
-        return;
-      }
-
-      try {
-        const result = await postFile<{ items: BoqItem[]; warning?: string }>("/api/boqs/upload", file);
-        applyLoadedBoq(file, result.items);
-        setMessage(result.warning ?? `Loaded ${result.items.length} BOQ rows from ${file.name}.`);
-      } catch (error) {
-        const items = await parseBoqFileInBrowser(file);
-        applyLoadedBoq(file, items);
-        setMessage(`Loaded ${items.length} BOQ rows from ${file.name} in browser. Server upload was unavailable.`);
-      }
+      const rows = await readBoqRowsForMapping(file);
+      stageBoqReview({ sourceName: file.name, sourceType: "workbook", rows });
+      setMessage(`Detected ${rows.length} BOQ rows from ${file.name}. Review the column mapping, then process.`);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Could not upload BOQ.");
     } finally {
@@ -249,6 +274,7 @@ export function CostingWorkspace({ initialView = "workspace", showCommandCenter 
 
   function applyLoadedBoq(file: File, loadedItems: BoqItem[]) {
     const cleanItems = sanitizeBoqItems(loadedItems);
+    setPendingBoqReview(null);
     setItems(cleanItems);
     setSelectedItemId(cleanItems[0]?.id ?? null);
     setCosted([]);
@@ -256,17 +282,86 @@ export function CostingWorkspace({ initialView = "workspace", showCommandCenter 
     setProjectName(file.name.replace(/\.[^.]+$/, ""));
   }
 
+  function stageBoqReview(input: Omit<PendingBoqReview, "headers" | "mapping">) {
+    const rows = input.rows.filter((row) => Object.values(row).some((value) => String(value ?? "").trim()));
+    const headers = collectHeaders(rows);
+    setPendingBoqReview({
+      ...input,
+      rows,
+      headers,
+      mapping: detectBoqMapping(headers)
+    });
+    setProjectName(input.sourceName.replace(/\.[^.]+$/, ""));
+    setActiveView("workspace");
+  }
+
+  function updateBoqMapping(key: BoqColumnKey, header: string) {
+    setPendingBoqReview((current) => current ? { ...current, mapping: { ...current.mapping, [key]: header } } : current);
+  }
+
+  async function enrichPendingBoq() {
+    if (!pendingBoqReview) return;
+    if (!pendingBoqReview.pageImages?.length) {
+      setMessage("AI spec enrichment needs a PDF upload with rendered page images.");
+      return;
+    }
+    setBusy("boq-enrich");
+    try {
+      const result = await fetchJsonWithTimeout<{ enrichments?: unknown[] }>("/api/ai/extract-pdf-vision", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          mode: "boq-enrichment",
+          filename: pendingBoqReview.sourceName,
+          rows: pendingBoqReview.rows,
+          pageImages: pendingBoqReview.pageImages
+        })
+      }, 120000);
+      const rows = await attachVisionImages(mergeBoqEnrichments(pendingBoqReview.rows, result.enrichments ?? []), pendingBoqReview.pageImages);
+      setPendingBoqReview((current) => current ? { ...current, rows, headers: collectHeaders(rows), mapping: detectBoqMapping(collectHeaders(rows), current.mapping) } : current);
+      setMessage(`AI enriched ${result.enrichments?.length ?? 0} BOQ rows. Review and process.`);
+    } catch (error) {
+      setMessage(error instanceof Error ? `AI enrichment failed: ${cleanErrorText(error.message)}` : "AI enrichment failed.");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  function processPendingBoq() {
+    if (!pendingBoqReview) return;
+    const mappedItems = boqItemsFromMappedRows(pendingBoqReview.rows, pendingBoqReview.mapping, globalMargin);
+    if (!mappedItems.length) {
+      setMessage("No valid furniture rows found. Check Product Name and Qty mapping.");
+      return;
+    }
+    const cleanItems = sanitizeBoqItems(mappedItems);
+    setPendingBoqReview(null);
+    setItems(cleanItems);
+    setSelectedItemId(cleanItems[0]?.id ?? null);
+    setCosted([]);
+    setPiItems([]);
+    setMessage(`Processed ${cleanItems.length} mapped BOQ rows. Run Cost BOQ when ready.`);
+  }
+
   async function uploadBoqPdf(file: File) {
     setBusy("pdf");
     try {
-      const result = await postFile<{ items?: BoqItem[]; fallbackItems?: BoqItem[]; warning?: string; error?: string }>("/api/ai/extract-boq-pdf", file);
-      const extracted = sanitizeBoqItems(result.items ?? result.fallbackItems ?? []);
-      setItems(extracted);
-      setSelectedItemId(extracted[0]?.id ?? null);
-      setCosted([]);
-      setPiItems([]);
-      setProjectName(file.name.replace(/\.[^.]+$/, ""));
-      setMessage(result.warning ?? `Extracted ${extracted.length} BOQ rows from ${file.name}.`);
+      const pageImages = await renderPdfPageImages(file);
+      try {
+        const result = await fetchJsonWithTimeout<{ rows?: Record<string, unknown>[]; items?: BoqItem[]; warning?: string }>("/api/ai/extract-pdf-vision", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ mode: "boq", filename: file.name, pageImages })
+        }, 120000);
+        const rows = await attachVisionImages(result.rows?.length ? result.rows : rowsFromBoqItems(result.items ?? []), pageImages);
+        stageBoqReview({ sourceName: file.name, sourceType: "pdf-vision", rows, pageImages });
+        setMessage(`Vision extracted ${rows.length} BOQ rows from ${file.name}. Review mapping, then process.`);
+      } catch (visionError) {
+        const result = await postFile<{ items?: BoqItem[]; fallbackItems?: BoqItem[]; warning?: string; error?: string }>("/api/ai/extract-boq-pdf", file);
+        const rows = rowsFromBoqItems(result.items ?? result.fallbackItems ?? []);
+        stageBoqReview({ sourceName: file.name, sourceType: "pdf-text", rows, pageImages });
+        setMessage(result.warning ?? `Text extracted ${rows.length} BOQ rows from ${file.name}. Vision was unavailable: ${cleanErrorText(visionError instanceof Error ? visionError.message : "unknown error")}`);
+      }
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Could not extract BOQ PDF.");
     } finally {
@@ -277,17 +372,30 @@ export function CostingWorkspace({ initialView = "workspace", showCommandCenter 
   async function uploadSpecPdf(file: File, mode: "spec-book" | "pi") {
     setBusy(mode === "pi" ? "pi-pdf" : "spec-pdf");
     try {
-      const form = new FormData();
-      form.append("file", file);
-      form.append("mode", mode);
-      const response = await fetch("/api/ai/extract-spec-pdf", { method: "POST", body: form });
-      const result = (await response.json()) as { sections?: ExtractedSpecRow[]; fallbackSections?: ExtractedSpecRow[]; warning?: string; error?: string };
-      const sections = result.sections ?? result.fallbackSections ?? [];
-      if (!response.ok && !sections.length) throw new Error(result.error ?? "Could not extract PDF.");
+      let sections: ExtractedSpecRow[] = [];
+      let warning = "";
+      try {
+        const pageImages = await renderPdfPageImages(file);
+        const result = await fetchJsonWithTimeout<{ sections?: ExtractedSpecRow[] }>("/api/ai/extract-pdf-vision", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ mode, filename: file.name, pageImages })
+        }, 120000);
+        sections = result.sections ?? [];
+      } catch (visionError) {
+        const form = new FormData();
+        form.append("file", file);
+        form.append("mode", mode);
+        const response = await fetch("/api/ai/extract-spec-pdf", { method: "POST", body: form });
+        const result = (await response.json()) as { sections?: ExtractedSpecRow[]; fallbackSections?: ExtractedSpecRow[]; warning?: string; error?: string };
+        sections = result.sections ?? result.fallbackSections ?? [];
+        warning = result.warning ?? `Vision extraction was unavailable: ${cleanErrorText(visionError instanceof Error ? visionError.message : "unknown error")}`;
+        if (!response.ok && !sections.length) throw new Error(result.error ?? "Could not extract PDF.");
+      }
       const extractedPiItems = piItemsFromExtractedSections(sections, mode === "pi" ? "pi-pdf" : "spec-book");
       setPiItems(extractedPiItems);
       setActiveView("pi");
-      setMessage(result.warning ?? `Extracted ${extractedPiItems.length} ${mode === "pi" ? "PI" : "spec book"} rows from ${file.name}. Review prices, then export PI.`);
+      setMessage(warning || `Vision extracted ${extractedPiItems.length} ${mode === "pi" ? "PI" : "spec book"} rows from ${file.name}. Review prices, then export PI.`);
       await refreshExportJobs();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Could not extract PDF.");
@@ -851,16 +959,31 @@ export function CostingWorkspace({ initialView = "workspace", showCommandCenter 
   const content = (
     <div className="space-y-4">
       {activeView === "workspace" && (
-        <WorkspaceTable
-          items={items}
-          costed={costed}
-          selectedItemId={selectedItem?.id}
-          onSelect={(itemId) => {
-            setSelectedItemId(itemId);
-            setActiveView("editor");
-          }}
-          onSave={exportSnapshot}
-        />
+        <>
+          {pendingBoqReview && (
+            <BoqMappingReview
+              review={pendingBoqReview}
+              busy={busy}
+              onMappingChange={updateBoqMapping}
+              onEnrich={enrichPendingBoq}
+              onProcess={processPendingBoq}
+              onCancel={() => {
+                setPendingBoqReview(null);
+                setMessage("BOQ review cancelled.");
+              }}
+            />
+          )}
+          <WorkspaceTable
+            items={items}
+            costed={costed}
+            selectedItemId={selectedItem?.id}
+            onSelect={(itemId) => {
+              setSelectedItemId(itemId);
+              setActiveView("editor");
+            }}
+            onSave={exportSnapshot}
+          />
+        </>
       )}
 
       {activeView === "projects" && <ProjectArchiveView projects={projects} onLoad={loadProject} onDelete={deleteProject} onExportAll={exportAllProjects} />}
@@ -1005,6 +1128,98 @@ export function CostingWorkspace({ initialView = "workspace", showCommandCenter 
       {tabs}
       {content}
     </section>
+  );
+}
+
+function BoqMappingReview({
+  review,
+  busy,
+  onMappingChange,
+  onEnrich,
+  onProcess,
+  onCancel
+}: {
+  review: PendingBoqReview;
+  busy: string | null;
+  onMappingChange: (key: BoqColumnKey, header: string) => void;
+  onEnrich: () => void;
+  onProcess: () => void;
+  onCancel: () => void;
+}) {
+  const fields: Array<{ key: BoqColumnKey; label: string; required?: boolean }> = [
+    { key: "code", label: "Code" },
+    { key: "name", label: "Product Name", required: true },
+    { key: "dims", label: "Dimensions" },
+    { key: "qty", label: "Qty", required: true },
+    { key: "spec", label: "Original Spec" },
+    { key: "aiSpec", label: "AI Enriched Spec" },
+    { key: "ct", label: "Construction Type" },
+    { key: "rawMat", label: "Raw Material" },
+    { key: "dimsSource", label: "Dims Source" },
+    { key: "image", label: "Image" }
+  ];
+  const previewHeaders = review.headers.slice(0, 8);
+  return (
+    <div className="surface overflow-hidden border-emerald-200">
+      <div className="flex flex-col gap-3 border-b border-slate-200 px-5 py-4 lg:flex-row lg:items-center lg:justify-between">
+        <div>
+          <div className="text-xs font-semibold uppercase tracking-[0.18em] text-emerald-700">Review BOQ Mapping</div>
+          <h2 className="mt-1 text-base font-semibold text-ink">{review.sourceName}</h2>
+          <p className="mt-1 text-sm text-slate-500">
+            {review.rows.length} rows from {review.sourceType === "pdf-vision" ? "PDF vision" : review.sourceType === "pdf-text" ? "PDF text fallback" : "workbook"}.
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <button disabled={!review.pageImages?.length || busy === "boq-enrich"} onClick={onEnrich} className="btn-secondary disabled:text-slate-300">
+            {busy === "boq-enrich" ? <Loader2 className="animate-spin" size={15} /> : <Library size={15} />}
+            AI enrich specs
+          </button>
+          <button onClick={onProcess} className="btn-primary">
+            Process BOQ
+          </button>
+          <button onClick={onCancel} className="btn-secondary">
+            Cancel
+          </button>
+        </div>
+      </div>
+
+      <div className="grid gap-4 p-5">
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+          {fields.map((field) => (
+            <label key={field.key} className="grid gap-1 text-xs font-medium text-slate-600">
+              {field.label}{field.required ? " *" : ""}
+              <select value={review.mapping[field.key] ?? ""} onChange={(event) => onMappingChange(field.key, event.target.value)} className="field font-normal">
+                <option value="">Skip</option>
+                {review.headers.map((header) => (
+                  <option key={`${field.key}:${header}`} value={header}>{header}</option>
+                ))}
+              </select>
+            </label>
+          ))}
+        </div>
+
+        <div className="overflow-x-auto rounded-md border border-slate-200">
+          <table className="w-full min-w-[720px] text-left text-xs">
+            <thead className="table-head">
+              <tr>
+                {previewHeaders.map((header) => <th key={header} className="px-3 py-2 font-medium">{header}</th>)}
+              </tr>
+            </thead>
+            <tbody>
+              {review.rows.slice(0, 5).map((row, index) => (
+                <tr key={index} className="border-t border-slate-100">
+                  {previewHeaders.map((header) => (
+                    <td key={`${index}:${header}`} className="max-w-[220px] truncate px-3 py-2 text-slate-600" title={String(row[header] ?? "")}>
+                      {String(row[header] ?? "")}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -1787,11 +2002,206 @@ async function postFile<T>(url: string, file: File): Promise<T> {
   return (await response.json()) as T;
 }
 
-async function parseBoqFileInBrowser(file: File): Promise<BoqItem[]> {
+async function readBoqRowsForMapping(file: File): Promise<Record<string, unknown>[]> {
   const name = file.name.toLowerCase();
-  if (name.endsWith(".csv")) return parseBoqCsv(await file.text());
-  if (name.endsWith(".xlsx") || name.endsWith(".xls")) return parseBoqWorkbook(new Uint8Array(await file.arrayBuffer()));
+  if (name.endsWith(".csv")) return rowsFromCsvText(await file.text());
+  if (name.endsWith(".xlsx") || name.endsWith(".xls")) return rowsFromWorkbookBuffer(new Uint8Array(await file.arrayBuffer()));
   throw new Error("Supported BOQ formats are CSV, XLSX, and XLS.");
+}
+
+async function renderPdfPageImages(file: File): Promise<PdfPageImage[]> {
+  const pdfjsLib = await loadPdfJs();
+  const pdf = await pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise;
+  const pages: PdfPageImage[] = [];
+  const maxPages = Math.min(pdf.numPages, 8);
+  for (let pageNo = 1; pageNo <= maxPages; pageNo += 1) {
+    const page = await pdf.getPage(pageNo);
+    const viewport = page.getViewport({ scale: 1.05 });
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.floor(viewport.width);
+    canvas.height = Math.floor(viewport.height);
+    const context = canvas.getContext("2d");
+    if (!context) continue;
+    await page.render({ canvasContext: context, viewport }).promise;
+    pages.push({ page: pageNo, base64: canvas.toDataURL("image/jpeg", 0.68).split(",")[1] ?? "", mimeType: "image/jpeg" });
+  }
+  if (!pages.length) throw new Error("Could not render PDF pages for vision extraction.");
+  return pages;
+}
+
+async function loadPdfJs(): Promise<PdfJsLib> {
+  if (window.pdfjsLib) return window.pdfjsLib;
+  await new Promise<void>((resolve, reject) => {
+    const existing = document.querySelector<HTMLScriptElement>("script[data-kf-pdfjs]");
+    if (existing) {
+      existing.addEventListener("load", () => resolve(), { once: true });
+      existing.addEventListener("error", () => reject(new Error("PDF.js failed to load.")), { once: true });
+      return;
+    }
+    const script = document.createElement("script");
+    script.src = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js";
+    script.async = true;
+    script.dataset.kfPdfjs = "true";
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error("PDF.js failed to load. Check internet access and try again."));
+    document.head.appendChild(script);
+  });
+  const pdfjsLib = window.pdfjsLib as PdfJsLib | undefined;
+  if (!pdfjsLib) throw new Error("PDF.js is unavailable.");
+  pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+  return pdfjsLib;
+}
+
+function collectHeaders(rows: Record<string, unknown>[]): string[] {
+  const headers = new Set<string>();
+  rows.slice(0, 25).forEach((row) => Object.keys(row).forEach((key) => headers.add(key)));
+  return Array.from(headers);
+}
+
+function detectBoqMapping(headers: string[], previous?: Partial<BoqColumnMapping>): BoqColumnMapping {
+  const pick = (patterns: RegExp[]) => previous && previousValueExists(headers, previous, patterns) ? previousValueExists(headers, previous, patterns) : headers.find((header) => patterns.some((pattern) => pattern.test(normalizeHeaderText(header)))) ?? "";
+  return {
+    code: pick([/^code$/, /^sr$/, /item.*code/, /^sr.*no/]),
+    name: pick([/product.*name/, /item.*name/, /^name$/, /^product$/, /^item$/, /description/, /particulars/]),
+    dims: pick([/dimension/, /^size$/, /size.*mm/, /lxwxh/, /w.*d.*h/]),
+    qty: pick([/^qty$/, /quantity/, /^nos$/, /pieces/, /count/]),
+    spec: pick([/^specification$/, /original.*spec/, /^spec$/, /material.*spec/, /finish/, /details/, /remarks/]),
+    aiSpec: pick([/ai.*enriched/, /enriched.*spec/, /ai.*spec/]),
+    ct: pick([/construction/, /^ct$/, /frame.*type/, /material.*type/]),
+    rawMat: pick([/raw.*material/, /^material$/, /^materials$/, /base.*material/]),
+    image: pick([/^image$/, /thumbnail/, /photo/]),
+    dimsSource: pick([/dims.*source/, /dim.*source/])
+  };
+}
+
+function previousValueExists(headers: string[], previous: Partial<BoqColumnMapping>, patterns: RegExp[]): string {
+  const match = Object.values(previous).find((value) => value && headers.includes(value) && patterns.some((pattern) => pattern.test(normalizeHeaderText(value))));
+  return match ?? "";
+}
+
+function normalizeHeaderText(header: string): string {
+  return header.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function boqItemsFromMappedRows(rows: Record<string, unknown>[], mapping: BoqColumnMapping, margin: number): BoqItem[] {
+  return rows.flatMap((row, index) => {
+    const name = mappedValue(row, mapping.name);
+    const spec = mappedValue(row, mapping.spec);
+    const aiSpec = mappedValue(row, mapping.aiSpec);
+    const rawMat = mappedValue(row, mapping.rawMat);
+    const dims = mappedValue(row, mapping.dims);
+    const qty = numericInput(mappedValue(row, mapping.qty)) || 1;
+    const code = mappedValue(row, mapping.code);
+    if (!name && !spec) return [];
+    const combinedSpec = [spec, aiSpec, rawMat].filter(Boolean).join(" | ");
+    const ct = mappedValue(row, mapping.ct) || inferCTFromSpec(name || spec, combinedSpec);
+    const item: BoqItem = {
+      id: `boq_${Date.now()}_${index}`,
+      code: code || undefined,
+      name: name || nameFromMappedSpec(spec) || code || `BOQ Item ${index + 1}`,
+      ptype: classify(name || spec, dims, [combinedSpec, ct].filter(Boolean).join(" | ")),
+      ct,
+      dims,
+      qty,
+      margin,
+      spec,
+      aiSpec: aiSpec || undefined,
+      image: mappedValue(row, mapping.image) || undefined,
+      dimsSource: mappedValue(row, mapping.dimsSource) || undefined
+    };
+    return [item];
+  });
+}
+
+function mappedValue(row: Record<string, unknown>, header: string): string {
+  return header ? String(row[header] ?? "").trim() : "";
+}
+
+function nameFromMappedSpec(spec: string): string {
+  return spec.replace(/\s+/g, " ").split(/\b(?:made|using|having|with|to be)\b/i)[0]?.trim().slice(0, 90) ?? "";
+}
+
+function rowsFromBoqItems(items: BoqItem[]): Record<string, unknown>[] {
+  return items.map((item) => ({
+    Code: item.code ?? "",
+    "Product Name": item.name,
+    Dimensions: item.dims,
+    Specification: item.spec ?? "",
+    "AI Enriched Spec": item.aiSpec ?? "",
+    Qty: item.qty,
+    "Construction Type": item.ct ?? "",
+    Image: item.image ?? "",
+    "Dims Source": item.dimsSource ?? ""
+  }));
+}
+
+function mergeBoqEnrichments(rows: Record<string, unknown>[], enrichments: unknown[]): Record<string, unknown>[] {
+  const next = rows.map((row) => ({ ...row }));
+  enrichments.forEach((entry) => {
+    const value = entry as Record<string, unknown>;
+    const index = Math.max(0, numericInput(value.row) - 1);
+    if (!next[index]) return;
+    if (value.missing_spec) next[index]["AI Enriched Spec"] = [next[index]["AI Enriched Spec"], value.missing_spec].filter(Boolean).join(" | ");
+    if (value.inferred_ct) next[index]["Construction Type"] = value.inferred_ct;
+    if (value.inferred_dims && !String(next[index].Dimensions ?? "").trim()) next[index].Dimensions = value.inferred_dims;
+    if (value.dims_source) next[index]["Dims Source"] = value.dims_source;
+    if (value.image_bbox) next[index]["Image BBox"] = value.image_bbox;
+  });
+  return next;
+}
+
+async function attachVisionImages(rows: Record<string, unknown>[], pageImages: PdfPageImage[]): Promise<Record<string, unknown>[]> {
+  const next = rows.map((row) => ({ ...row }));
+  await Promise.all(next.map(async (row) => {
+    const bbox = parseImageBbox(row["Image BBox"] ?? row.image_bbox ?? row.bbox);
+    if (!bbox) return;
+    const page = pageImages.find((image) => image.page === bbox.page) ?? pageImages[0];
+    if (!page) return;
+    try {
+      row.Image = await cropPdfImage(page, bbox);
+    } catch {
+      // Thumbnails are helpful, but extraction should continue without them.
+    }
+  }));
+  return next;
+}
+
+function parseImageBbox(value: unknown): { page: number; x: number; y: number; w: number; h: number } | undefined {
+  if (!value) return undefined;
+  try {
+    const parsed = typeof value === "string" ? JSON.parse(value) : value;
+    const bbox = parsed as { page?: unknown; x?: unknown; y?: unknown; w?: unknown; h?: unknown };
+    const x = numericInput(bbox.x);
+    const y = numericInput(bbox.y);
+    const w = numericInput(bbox.w);
+    const h = numericInput(bbox.h);
+    if (w <= 0 || h <= 0) return undefined;
+    return { page: numericInput(bbox.page) || 1, x, y, w, h };
+  } catch {
+    return undefined;
+  }
+}
+
+function cropPdfImage(page: PdfPageImage, bbox: { x: number; y: number; w: number; h: number }): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => {
+      const sx = Math.max(0, (bbox.x / 100) * image.width);
+      const sy = Math.max(0, (bbox.y / 100) * image.height);
+      const sw = Math.min(image.width - sx, (bbox.w / 100) * image.width);
+      const sh = Math.min(image.height - sy, (bbox.h / 100) * image.height);
+      const canvas = document.createElement("canvas");
+      const scale = Math.min(140 / Math.max(sw, 1), 140 / Math.max(sh, 1), 1);
+      canvas.width = Math.max(1, Math.round(sw * scale));
+      canvas.height = Math.max(1, Math.round(sh * scale));
+      const context = canvas.getContext("2d");
+      if (!context) return reject(new Error("Canvas is unavailable."));
+      context.drawImage(image, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+      resolve(canvas.toDataURL("image/jpeg", 0.82));
+    };
+    image.onerror = () => reject(new Error("Could not load rendered page image."));
+    image.src = `data:${page.mimeType};base64,${page.base64}`;
+  });
 }
 
 async function fetchJsonWithTimeout<T>(url: string, init: RequestInit, timeoutMs: number): Promise<T> {

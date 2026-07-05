@@ -12,6 +12,15 @@ export type AiCallInput = {
   modelId?: string;
 };
 
+export type AiImageInput = {
+  base64: string;
+  mimeType?: string;
+};
+
+export type AiVisionCallInput = AiCallInput & {
+  images: AiImageInput[];
+};
+
 export type AiCallResult = {
   provider: AiProvider;
   modelId: string;
@@ -22,8 +31,36 @@ export type AiCallResult = {
 export async function callAiText(input: AiCallInput): Promise<AiCallResult> {
   const modelId = input.modelId ?? defaultModel(input.provider);
   const requestHash = hash(`${input.provider}:${modelId}:${input.promptVersion}:${input.prompt}`);
+  return callAiWithCache({
+    ...input,
+    modelId,
+    requestHash,
+    promptRecord: { text: input.prompt },
+    execute: () => (input.provider === "openai" ? callOpenAi(modelId, input.prompt) : callAnthropic(modelId, input.prompt))
+  });
+}
+
+export async function callAiVision(input: AiVisionCallInput): Promise<AiCallResult> {
+  const modelId = input.modelId ?? defaultModel(input.provider);
+  const imageHash = input.images.map((image) => hash(`${image.mimeType ?? "image/jpeg"}:${image.base64}`)).join(":");
+  const requestHash = hash(`${input.provider}:${modelId}:${input.promptVersion}:${input.prompt}:${imageHash}`);
+  return callAiWithCache({
+    ...input,
+    modelId,
+    requestHash,
+    promptRecord: { text: input.prompt, imageCount: input.images.length },
+    execute: () => (input.provider === "openai" ? callOpenAiVision(modelId, input.prompt, input.images) : callAnthropicVision(modelId, input.prompt, input.images))
+  });
+}
+
+async function callAiWithCache(input: AiCallInput & {
+  requestHash: string;
+  promptRecord: Prisma.InputJsonValue;
+  execute: () => Promise<string>;
+}): Promise<AiCallResult> {
+  const modelId = input.modelId ?? defaultModel(input.provider);
   const cached = await prisma.aiCacheEntry.findUnique({
-    where: { signature: requestHash },
+    where: { signature: input.requestHash },
     include: { aiRequest: { include: { result: true } } }
   });
 
@@ -37,14 +74,14 @@ export async function callAiText(input: AiCallInput): Promise<AiCallResult> {
       provider: input.provider,
       modelId,
       promptVersion: input.promptVersion,
-      requestHash,
-      prompt: { text: input.prompt },
+      requestHash: input.requestHash,
+      prompt: input.promptRecord,
       status: "running"
     }
   });
 
   try {
-    const text = input.provider === "openai" ? await callOpenAi(modelId, input.prompt) : await callAnthropic(modelId, input.prompt);
+    const text = await input.execute();
     await prisma.aiResult.create({
       data: {
         aiRequestId: request.id,
@@ -53,7 +90,7 @@ export async function callAiText(input: AiCallInput): Promise<AiCallResult> {
     });
     await prisma.aiCacheEntry.create({
       data: {
-        signature: requestHash,
+        signature: input.requestHash,
         aiRequestId: request.id,
         output: { text } as Prisma.InputJsonValue
       }
@@ -137,6 +174,74 @@ async function callAnthropic(model: string, prompt: string): Promise<string> {
 
   const body = (await response.json()) as { content?: Array<{ type: string; text?: string }>; error?: { message?: string } };
   if (!response.ok) throw new Error(body.error?.message ?? "Anthropic request failed.");
+  return body.content?.map((content) => (content.type === "text" ? content.text ?? "" : "")).join("\n").trim() ?? "";
+}
+
+async function callOpenAiVision(model: string, prompt: string, images: AiImageInput[]): Promise<string> {
+  if (!env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY is not configured.");
+  const response = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${env.OPENAI_API_KEY}`,
+      "content-type": "application/json"
+    },
+    body: JSON.stringify({
+      model,
+      input: [
+        {
+          role: "user",
+          content: [
+            { type: "input_text", text: prompt },
+            ...images.map((image) => ({
+              type: "input_image",
+              image_url: `data:${image.mimeType ?? "image/jpeg"};base64,${image.base64}`
+            }))
+          ]
+        }
+      ],
+      temperature: 0.1
+    })
+  });
+
+  const body = (await response.json()) as { output_text?: string; output?: Array<{ content?: Array<{ text?: string }> }>; error?: { message?: string } };
+  if (!response.ok) throw new Error(body.error?.message ?? "OpenAI vision request failed.");
+  return body.output_text ?? body.output?.flatMap((item) => item.content ?? []).map((content) => content.text ?? "").join("\n").trim() ?? "";
+}
+
+async function callAnthropicVision(model: string, prompt: string, images: AiImageInput[]): Promise<string> {
+  if (!env.ANTHROPIC_API_KEY) throw new Error("ANTHROPIC_API_KEY is not configured.");
+  const response = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "x-api-key": env.ANTHROPIC_API_KEY,
+      "anthropic-version": "2023-06-01",
+      "content-type": "application/json"
+    },
+    body: JSON.stringify({
+      model,
+      max_tokens: 5000,
+      temperature: 0.1,
+      messages: [
+        {
+          role: "user",
+          content: [
+            ...images.map((image) => ({
+              type: "image",
+              source: {
+                type: "base64",
+                media_type: image.mimeType ?? "image/jpeg",
+                data: image.base64
+              }
+            })),
+            { type: "text", text: prompt }
+          ]
+        }
+      ]
+    })
+  });
+
+  const body = (await response.json()) as { content?: Array<{ type: string; text?: string }>; error?: { message?: string } };
+  if (!response.ok) throw new Error(body.error?.message ?? "Anthropic vision request failed.");
   return body.content?.map((content) => (content.type === "text" ? content.text ?? "" : "")).join("\n").trim() ?? "";
 }
 

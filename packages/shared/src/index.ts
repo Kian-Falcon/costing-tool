@@ -68,6 +68,8 @@ export type BoqItem = {
   rateOverrides?: Record<string, number>;
   materialOverrides?: Record<string, string>;
   addedMaterials?: AddedMaterial[];
+  image?: string;
+  dimsSource?: "schedule" | "drawing" | "missing" | "manual" | string;
 };
 
 export type CorpusProduct = {
