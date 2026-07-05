@@ -1,6 +1,6 @@
 import { buildPiCsv, buildPiXlsx, type CostedBoqRow } from "@kf/importers";
 import { buildPiPdf } from "../../../../lib/export-documents";
-import { authJsonError, requireRole, requireUser } from "../../../../lib/auth";
+import { authJsonError, getCurrentUser } from "../../../../lib/auth";
 import { completeExportJob, failExportJob, fileResponse, startExportJob, storeExportOutput } from "../../../../lib/export-jobs";
 import { z } from "zod";
 
@@ -21,11 +21,10 @@ export async function POST(request: Request) {
   let jobId: string | undefined;
 
   try {
-    const user = await requireUser();
-    requireRole(user, "MEMBER");
     const body = requestSchema.parse(await request.json());
+    const user = await getCurrentUser().catch(() => null);
     try {
-      const job = await startExportJob("pi", body.format, body.rows.length, user);
+      const job = await startExportJob("pi", body.format, body.rows.length, user ?? undefined);
       jobId = job.id;
     } catch {
       // Export history is optional; the file download should still work.
@@ -33,18 +32,18 @@ export async function POST(request: Request) {
 
     if (body.format === "pdf") {
       const buffer = await buildPiPdf(body.rows, body.meta);
-      await recordExportOutput(jobId, user, "proforma-invoice.pdf", "application/pdf", buffer);
+      await recordExportOutput(jobId, user ?? undefined, "proforma-invoice.pdf", "application/pdf", buffer);
       return fileResponse(buffer, "application/pdf", "proforma-invoice.pdf", jobId ?? "direct");
     }
 
     if (body.format === "csv") {
       const csv = buildPiCsv(body.rows);
-      await recordExportOutput(jobId, user, "proforma-invoice.csv", "text/csv; charset=utf-8", csv);
+      await recordExportOutput(jobId, user ?? undefined, "proforma-invoice.csv", "text/csv; charset=utf-8", csv);
       return fileResponse(csv, "text/csv; charset=utf-8", "proforma-invoice.csv", jobId ?? "direct");
     }
 
     const buffer = buildPiXlsx(body.rows);
-    await recordExportOutput(jobId, user, "proforma-invoice.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", buffer);
+    await recordExportOutput(jobId, user ?? undefined, "proforma-invoice.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", buffer);
     return fileResponse(buffer, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "proforma-invoice.xlsx", jobId ?? "direct");
   } catch (error) {
     if (jobId) await failExportJob(jobId, error).catch(() => undefined);
@@ -52,7 +51,7 @@ export async function POST(request: Request) {
   }
 }
 
-async function recordExportOutput(jobId: string | undefined, user: Awaited<ReturnType<typeof requireUser>>, filename: string, contentType: string, body: Buffer | string) {
+async function recordExportOutput(jobId: string | undefined, user: NonNullable<Awaited<ReturnType<typeof getCurrentUser>>> | undefined, filename: string, contentType: string, body: Buffer | string) {
   if (!jobId) return;
   try {
     const file = await storeExportOutput({ user, filename, contentType, body });

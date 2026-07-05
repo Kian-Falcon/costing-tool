@@ -739,12 +739,7 @@ export function CostingWorkspace({ initialView = "workspace", showCommandCenter 
         throw new Error(errorText || "Export failed.");
       }
       const blob = await response.blob();
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement("a");
-      anchor.href = url;
-      anchor.download = `${kind === "pi" ? "proforma-invoice" : kind}.${format}`;
-      anchor.click();
-      URL.revokeObjectURL(url);
+      downloadBrowserBlob(blob, filenameFromResponse(response, `${kind === "pi" ? "proforma-invoice" : kind}.${format}`));
       await refreshExportJobs();
       setMessage(`Exported ${kindLabel(kind)} ${format.toUpperCase()}.`);
     } catch (error) {
@@ -1964,12 +1959,25 @@ function isCommercialBoqItem(item: BoqItem): boolean {
 
 function downloadBlob(content: string, filename: string, type: string) {
   const blob = new Blob([content], { type });
+  downloadBrowserBlob(blob, filename);
+}
+
+function downloadBrowserBlob(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
   anchor.download = filename;
+  anchor.style.display = "none";
+  document.body.appendChild(anchor);
   anchor.click();
-  URL.revokeObjectURL(url);
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function filenameFromResponse(response: Response, fallback: string): string {
+  const disposition = response.headers.get("content-disposition") ?? "";
+  const match = disposition.match(/filename\*?=(?:UTF-8'')?"?([^";]+)"?/i);
+  return match?.[1] ? decodeURIComponent(match[1]) : fallback;
 }
 
 function groupCounts(values: string[]): Record<string, number> {
