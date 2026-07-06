@@ -870,7 +870,7 @@ export function CostingWorkspace({ initialView = "workspace", showCommandCenter 
   }
 
   async function exportFile(kind: "client-quotation" | "internal-costing" | "pi", format: ExportFormat) {
-    const exportRows = kind === "pi" && piItems.length ? piItemsToCostedRows(piItems) : costed;
+    const exportRows = kind === "pi" ? (piItems.length ? piItemsToCostedRows(piItems) : costedRowsToPiExportRows(costed)) : costed;
     if (!exportRows.length) {
       setMessage(kind === "pi" ? "Push costed BOQ rows to PI before exporting." : "Cost the BOQ before exporting.");
       return;
@@ -887,9 +887,10 @@ export function CostingWorkspace({ initialView = "workspace", showCommandCenter 
         throw new Error(errorText || "Export failed.");
       }
       const blob = await response.blob();
+      if (!blob.size) throw new Error("The export returned an empty file.");
       downloadBrowserBlob(blob, filenameFromResponse(response, `${kind === "pi" ? "proforma-invoice" : kind}.${format}`));
       await refreshExportJobs();
-      setMessage(`Exported ${kindLabel(kind)} ${format.toUpperCase()}.`);
+      setMessage(`Exported ${kindLabel(kind)} ${format.toUpperCase()} (${Math.max(1, Math.round(blob.size / 1024))} KB).`);
     } catch (error) {
       setMessage(error instanceof Error ? `Export failed: ${cleanErrorText(error.message)}` : "Export failed.");
     } finally {
@@ -2369,6 +2370,34 @@ function piItemsToCostedRows(items: PiItem[]): CostedRow[] {
       }
     };
   });
+}
+
+function costedRowsToPiExportRows(rows: CostedRow[]): CostedRow[] {
+  return rows.map(({ item, result }) => ({
+    item: {
+      id: item.id,
+      code: item.code,
+      name: item.name,
+      ptype: item.ptype,
+      dims: item.dims,
+      qty: item.qty,
+      margin: item.margin,
+      spec: item.aiSpec || item.spec || ""
+    },
+    result: {
+      raw: 0,
+      factory: result.sell,
+      sell: result.sell,
+      total: result.total,
+      confidence: result.confidence,
+      source: result.source,
+      breakdown: [],
+      refs: [],
+      matchLevel: result.matchLevel,
+      matchLabel: result.matchLabel,
+      matchScore: result.matchScore
+    }
+  }));
 }
 
 function numericInput(value: unknown): number {

@@ -35,10 +35,12 @@ export async function failExportJob(id: string, error: unknown) {
 
 export function fileResponse(body: Buffer | string, contentType: string, filename: string, jobId: string): Response {
   const responseBody = typeof body === "string" ? body : new Uint8Array(body);
+  const contentLength = typeof body === "string" ? Buffer.byteLength(body, "utf8") : body.byteLength;
   return new Response(responseBody, {
     headers: {
       "content-type": contentType,
-      "content-disposition": `attachment; filename=${filename}`,
+      "content-length": String(contentLength),
+      "content-disposition": `attachment; filename="${filename}"; filename*=UTF-8''${encodeURIComponent(filename)}`,
       "x-export-job-id": jobId
     }
   });
