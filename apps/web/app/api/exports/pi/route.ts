@@ -1,8 +1,6 @@
 import { buildPiCsv, buildPiXlsx, type CostedBoqRow } from "@kf/importers";
 import { buildPiPdf } from "../../../../lib/export-documents";
-import { authJsonError, getCurrentUser } from "../../../../lib/auth";
-import { completeExportJob, failExportJob, fileResponse, startExportJob, storeExportOutput } from "../../../../lib/export-jobs";
-import { z } from "zod";
+import { ZodError, z } from "zod";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -18,45 +16,35 @@ const requestSchema = z.object({
 });
 
 export async function POST(request: Request) {
-  let jobId: string | undefined;
-
   try {
     const body = requestSchema.parse(await request.json());
-    const user = await getCurrentUser().catch(() => null);
-    try {
-      const job = await startExportJob("pi", body.format, body.rows.length, user ?? undefined);
-      jobId = job.id;
-    } catch {
-      // Export history is optional; the file download should still work.
-    }
 
     if (body.format === "pdf") {
       const buffer = await buildPiPdf(body.rows, body.meta);
-      await recordExportOutput(jobId, user ?? undefined, "proforma-invoice.pdf", "application/pdf", buffer);
-      return fileResponse(buffer, "application/pdf", "proforma-invoice.pdf", jobId ?? "direct");
+      return downloadResponse(buffer, "application/pdf", "proforma-invoice.pdf");
     }
 
     if (body.format === "csv") {
       const csv = buildPiCsv(body.rows);
-      await recordExportOutput(jobId, user ?? undefined, "proforma-invoice.csv", "text/csv; charset=utf-8", csv);
-      return fileResponse(csv, "text/csv; charset=utf-8", "proforma-invoice.csv", jobId ?? "direct");
+      return downloadResponse(csv, "text/csv; charset=utf-8", "proforma-invoice.csv");
     }
 
     const buffer = buildPiXlsx(body.rows);
-    await recordExportOutput(jobId, user ?? undefined, "proforma-invoice.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", buffer);
-    return fileResponse(buffer, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "proforma-invoice.xlsx", jobId ?? "direct");
+    return downloadResponse(buffer, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "proforma-invoice.xlsx");
   } catch (error) {
-    if (jobId) await failExportJob(jobId, error).catch(() => undefined);
-    return authJsonError(error);
+    const message = error instanceof ZodError ? "Invalid PI export data." : error instanceof Error ? error.message : "PI export failed.";
+    return Response.json({ error: message }, { status: error instanceof ZodError ? 400 : 500 });
   }
 }
 
-async function recordExportOutput(jobId: string | undefined, user: NonNullable<Awaited<ReturnType<typeof getCurrentUser>>> | undefined, filename: string, contentType: string, body: Buffer | string) {
-  if (!jobId) return;
-  try {
-    const file = await storeExportOutput({ user, filename, contentType, body });
-    await completeExportJob(jobId, file.storageKey, file.id);
-  } catch {
-    // Storage is useful for history, but should not block a generated download.
-  }
+function downloadResponse(body: Buffer | string, contentType: string, filename: string): Response {
+  const responseBody = typeof body === "string" ? body : new Uint8Array(body);
+  const contentLength = typeof body === "string" ? Buffer.byteLength(body, "utf8") : body.byteLength;
+  return new Response(responseBody, {
+    headers: {
+      "content-type": contentType,
+      "content-length": String(contentLength),
+      "content-disposition": `attachment; filename="${filename}"; filename*=UTF-8''${encodeURIComponent(filename)}`
+    }
+  });
 }

@@ -5,6 +5,10 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  const user = await getCurrentUser();
-  return NextResponse.json({ user });
+  try {
+    const user = await getCurrentUser();
+    return NextResponse.json({ user });
+  } catch {
+    return NextResponse.json({ user: null, warning: "Authentication database is unavailable." });
+  }
 }
