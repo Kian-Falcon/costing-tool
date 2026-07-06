@@ -7,10 +7,11 @@ import { rowsFromCsvText, rowsFromWorkbookBuffer } from "./workbook";
 export function parseBoqRows(rows: Record<string, unknown>[]): BoqItem[] {
   return rows.flatMap((row, index) => {
     const code = pick(row, ["Code", "Sr", "Sr / code", "Item Code"]);
-    const dims = pick(row, ["Dimensions", "Product Size (mm)", "Size"]);
-    const spec = pick(row, ["Specification", "Original Specification", "Spec", "Material Specification"]);
-    const pickedName = pick(row, ["Product Name", "Name", "Item", "Description", "Particulars"]);
-    const name = pickedName || nameFromSpec(spec) || code || `BOQ Item ${index + 1}`;
+    const description = pick(row, ["Description", "Particulars"]);
+    const pickedName = pick(row, ["Product Name", "Name", "Item"]) || description;
+    const spec = pick(row, ["Specification", "Original Specification", "Spec", "Material Specification"]) || description;
+    const dims = pick(row, ["Dimensions", "Product Size (mm)", "Size"]) || dimensionsFromText(`${pickedName} ${spec}`);
+    const name = productNameFromDescription(pickedName) || nameFromSpec(spec) || code || `BOQ Item ${index + 1}`;
     const qty = numericValue(row, ["Qty", "QTY", "Quantity", "Nos"]);
 
     if (
@@ -33,6 +34,36 @@ export function parseBoqRows(rows: Record<string, unknown>[]): BoqItem[] {
       spec
     };
   });
+}
+
+export function dimensionsFromText(text: string): string {
+  const compact = text.replace(/\s+/g, " ").trim();
+  if (!compact) return "";
+
+  const direct = compact.match(/\b(?:size\s*)?(\d{2,5}(?:\.\d+)?)\s*(?:mm)?\s*(?:x|×|\*)\s*(\d{2,5}(?:\.\d+)?)\s*(?:mm)?(?:\s*(?:x|×|\*)\s*(\d{2,5}(?:\.\d+)?)\s*(?:mm)?)?/i);
+  if (direct) return [direct[1], direct[2], direct[3]].filter(Boolean).map(cleanDimensionNumber).join("x");
+
+  const splitDepth = compact.match(/\b(\d{2,5}(?:\.\d+)?)\s*\/\s*(\d{2,5}(?:\.\d+)?)\s*mm\s*deep\b.*?\b(\d{2,5}(?:\.\d+)?)\s*mm\s*(?:long|length)\b.*?\b(\d{2,5}(?:\.\d+)?)\s*mm\s*(?:height|high|h)\b/i);
+  if (splitDepth) return [splitDepth[3], splitDepth[1], splitDepth[4]].map(cleanDimensionNumber).join("x");
+
+  const longDeepHigh = compact.match(/\b(\d{2,5}(?:\.\d+)?)\s*mm\s*(?:long|length|l)\b.*?\b(\d{2,5}(?:\.\d+)?)\s*mm\s*(?:deep|depth|wide|width|w|d)\b.*?\b(\d{2,5}(?:\.\d+)?)\s*mm\s*(?:height|high|h)\b/i);
+  if (longDeepHigh) return [longDeepHigh[1], longDeepHigh[2], longDeepHigh[3]].map(cleanDimensionNumber).join("x");
+
+  const deepLongHigh = compact.match(/\b(\d{2,5}(?:\.\d+)?)\s*mm\s*(?:deep|depth|wide|width|w|d)\b.*?\b(\d{2,5}(?:\.\d+)?)\s*mm\s*(?:long|length|l)\b.*?\b(\d{2,5}(?:\.\d+)?)\s*mm\s*(?:height|high|h)\b/i);
+  if (deepLongHigh) return [deepLongHigh[2], deepLongHigh[1], deepLongHigh[3]].map(cleanDimensionNumber).join("x");
+
+  return "";
+}
+
+export function productNameFromDescription(text: string): string {
+  const compact = text.replace(/\s+/g, " ").trim();
+  if (!compact) return "";
+  const firstClause = compact.split(/\b(?:of size|size|made out|made of|work top made|top made|understructure|with counter of size|with provisions|fitted with)\b/i)[0]?.trim();
+  return (firstClause || compact).replace(/[.:;,]+$/g, "").slice(0, 90);
+}
+
+function cleanDimensionNumber(value: string): string {
+  return value.replace(/\.0+$/, "");
 }
 
 function cryptoSafeId(index: number): string {

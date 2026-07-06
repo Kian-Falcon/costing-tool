@@ -1,7 +1,7 @@
 "use client";
 
 import { classify, costItem, inferCTFromSpec, rebuildModelsFromCorpus, rebuildRatioNorms } from "@kf/costing-engine";
-import { rowsFromBoqCsv, rowsFromBoqWorkbook } from "@kf/importers";
+import { dimensionsFromText, productNameFromDescription, rowsFromBoqCsv, rowsFromBoqWorkbook } from "@kf/importers";
 import type { AddedMaterial, BoqItem, CorpusProduct, CostResult, MaterialBreakdownLine, RateItem, RatioNorm, TrainedModel } from "@kf/shared";
 import { Calculator, Database, Download, FileUp, Library, Loader2, Percent, RotateCcw, Save, Trash2, UploadCloud } from "lucide-react";
 import type { ReactNode } from "react";
@@ -2108,7 +2108,7 @@ function detectBoqMapping(headers: string[], previous?: Partial<BoqColumnMapping
     name: pick([/product.*name/, /item.*name/, /^name$/, /^product$/, /^item$/, /description/, /particulars/]),
     dims: pick([/dimension/, /^size$/, /size.*mm/, /lxwxh/, /w.*d.*h/]),
     qty: pick([/^qty$/, /quantity/, /^nos$/, /pieces/, /count/]),
-    spec: pick([/^specification$/, /original.*spec/, /^spec$/, /material.*spec/, /finish/, /details/, /remarks/]),
+    spec: pick([/^specification$/, /original.*spec/, /^spec$/, /material.*spec/, /finish/, /details/, /remarks/, /description/, /particulars/]),
     aiSpec: pick([/ai.*enriched/, /enriched.*spec/, /ai.*spec/]),
     ct: pick([/construction/, /^ct$/, /frame.*type/, /material.*type/]),
     rawMat: pick([/raw.*material/, /^material$/, /^materials$/, /base.*material/]),
@@ -2128,21 +2128,22 @@ function normalizeHeaderText(header: string): string {
 
 function boqItemsFromMappedRows(rows: Record<string, unknown>[], mapping: BoqColumnMapping, margin: number): BoqItem[] {
   return rows.flatMap((row, index) => {
-    const name = mappedValue(row, mapping.name);
-    const spec = mappedValue(row, mapping.spec);
+    const rawName = mappedValue(row, mapping.name);
+    const spec = mappedValue(row, mapping.spec) || (isDescriptionLikeHeader(mapping.name) ? rawName : "");
     const aiSpec = mappedValue(row, mapping.aiSpec);
     const rawMat = mappedValue(row, mapping.rawMat);
-    const dims = mappedValue(row, mapping.dims);
+    const dims = mappedValue(row, mapping.dims) || dimensionsFromText(`${rawName} ${spec} ${aiSpec}`);
     const qty = numericInput(mappedValue(row, mapping.qty)) || 1;
     const code = mappedValue(row, mapping.code);
-    if (!name && !spec) return [];
+    if (!rawName && !spec) return [];
     const combinedSpec = [spec, aiSpec, rawMat].filter(Boolean).join(" | ");
-    const ct = mappedValue(row, mapping.ct) || inferCTFromSpec(name || spec, combinedSpec);
+    const name = productNameFromDescription(rawName || spec) || nameFromMappedSpec(spec) || code || `BOQ Item ${index + 1}`;
+    const ct = mappedValue(row, mapping.ct) || inferCTFromSpec(rawName || spec, combinedSpec);
     const item: BoqItem = {
       id: `boq_${Date.now()}_${index}`,
       code: code || undefined,
-      name: name || nameFromMappedSpec(spec) || code || `BOQ Item ${index + 1}`,
-      ptype: classify(name || spec, dims, [combinedSpec, ct].filter(Boolean).join(" | ")),
+      name,
+      ptype: classify(name || rawName || spec, dims, [combinedSpec, ct].filter(Boolean).join(" | ")),
       ct,
       dims,
       qty,
@@ -2154,6 +2155,10 @@ function boqItemsFromMappedRows(rows: Record<string, unknown>[], mapping: BoqCol
     };
     return [item];
   });
+}
+
+function isDescriptionLikeHeader(header: string): boolean {
+  return /description|particulars/i.test(header);
 }
 
 function mappedValue(row: Record<string, unknown>, header: string): string {
