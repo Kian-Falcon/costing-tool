@@ -1,5 +1,6 @@
 import { buildPiCsv, buildPiXlsx, type CostedBoqRow } from "@kf/importers";
 import { buildPiPdf } from "../../../../lib/export-documents";
+import { downloadResponse } from "../../../../lib/download-response";
 import { ZodError, z } from "zod";
 
 export const runtime = "nodejs";
@@ -35,16 +36,4 @@ export async function POST(request: Request) {
     const message = error instanceof ZodError ? "Invalid PI export data." : error instanceof Error ? error.message : "PI export failed.";
     return Response.json({ error: message }, { status: error instanceof ZodError ? 400 : 500 });
   }
-}
-
-function downloadResponse(body: Buffer | string, contentType: string, filename: string): Response {
-  const responseBody = typeof body === "string" ? body : new Uint8Array(body);
-  const contentLength = typeof body === "string" ? Buffer.byteLength(body, "utf8") : body.byteLength;
-  return new Response(responseBody, {
-    headers: {
-      "content-type": contentType,
-      "content-length": String(contentLength),
-      "content-disposition": `attachment; filename="${filename}"; filename*=UTF-8''${encodeURIComponent(filename)}`
-    }
-  });
 }

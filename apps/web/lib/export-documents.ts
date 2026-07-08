@@ -53,6 +53,11 @@ async function buildPdf(title: string, subtitle: string, rows: Record<string, un
 }
 
 function renderHeader(document: PDFKit.PDFDocument, title: string, subtitle: string, variant: PdfVariant, meta: ExportDocumentMeta) {
+  if (variant === "pi") {
+    renderPiHeader(document, title, variant, meta);
+    return;
+  }
+
   const docNo = documentNumber(variant);
   renderLogo(document);
   document.fillColor("#111827").font("Helvetica-Bold").fontSize(11).text(companyName(), 42, 82, { width: 220 });
@@ -76,22 +81,38 @@ function renderHeader(document: PDFKit.PDFDocument, title: string, subtitle: str
 }
 
 function renderRow(document: PDFKit.PDFDocument, row: Record<string, unknown>, index: number, variant: PdfVariant) {
-  const name = pick(row, "Product Name", "Description");
-  const code = pick(row, "Code");
-  const qty = pick(row, "Qty");
-  const total = currency(pick(row, "Line Total (INR)", "Amount (INR)"));
-  const unitPrice = currency(pick(row, "Unit Price (INR)", "Selling Price (INR)"));
+  const name = String(pick(row, "Product Name", "Description") || "Item");
+  const code = String(pick(row, "Code") || "-");
+  const qty = String(pick(row, "Qty") || "-");
+  const total = moneyOnly(currency(pick(row, "Line Total (INR)", "Amount (INR)")));
+  const unitPrice = moneyOnly(currency(pick(row, "Unit Price (INR)", "Selling Price (INR)")));
+  const dimensions = String(pick(row, "Dimensions") || "-");
+  const spec = truncateWords(String(pick(row, "Specification") || "-"), variant === "pi" ? 140 : 220);
 
   const startY = document.y;
-  document.fillColor("#111827").font("Helvetica").fontSize(7.5).text(String(index + 1), 42, startY, { width: 22 });
-  document.text(String(code || "-"), 66, startY, { width: 58 });
-  document.fillColor("#111827").font("Helvetica-Bold").fontSize(7.7).text(String(name || "Item"), 128, startY, { width: 118 });
-  document.fillColor("#111827").font("Helvetica").fontSize(7.2).text(String(pick(row, "Dimensions") || "-"), 250, startY, { width: 78 });
-  document.text(String(pick(row, "Specification") || "-"), 332, startY, { width: 72 });
-  document.text(String(qty || "-"), 406, startY, { width: 28, align: "right" });
-  document.text(moneyOnly(unitPrice), 438, startY, { width: 52, align: "right" });
-  document.fillColor("#111827").font("Helvetica-Bold").text(moneyOnly(total), 494, startY, { width: 54, align: "right" });
-  document.y = startY + 15;
+  const cells = [
+    { text: String(index + 1), x: 42, width: 22, align: "right" as const, font: "Helvetica", size: 7.5 },
+    { text: code, x: 66, width: 58, align: "left" as const, font: "Helvetica", size: 7.5 },
+    { text: name, x: 128, width: 118, align: "left" as const, font: "Helvetica-Bold", size: 7.7 },
+    { text: dimensions, x: 250, width: 78, align: "left" as const, font: "Helvetica", size: 7.2 },
+    { text: spec, x: 332, width: 72, align: "left" as const, font: "Helvetica", size: 7.2 },
+    { text: qty, x: 406, width: 28, align: "right" as const, font: "Helvetica", size: 7.2 },
+    { text: unitPrice, x: 438, width: 52, align: "right" as const, font: "Helvetica", size: 7.2 },
+    { text: total, x: 494, width: 54, align: "right" as const, font: "Helvetica-Bold", size: 7.2 }
+  ];
+  const heights = cells.map((cell) => document.font(cell.font).fontSize(cell.size).heightOfString(cell.text, { width: cell.width, align: cell.align }));
+  const rowHeight = Math.max(18, Math.max(...heights) + 8);
+
+  if (startY + rowHeight > 744) {
+    document.addPage();
+    renderHeader(document, variant === "pi" ? "Proforma Invoice" : "Client Quotation", "", variant, {});
+    return renderRow(document, row, index, variant);
+  }
+
+  cells.forEach((cell) => {
+    document.fillColor("#111827").font(cell.font).fontSize(cell.size).text(cell.text, cell.x, startY, { width: cell.width, align: cell.align });
+  });
+  document.y = startY + rowHeight;
 
   if (variant === "internal") {
     document.fillColor("#475569").fontSize(8).text(
@@ -104,6 +125,23 @@ function renderRow(document: PDFKit.PDFDocument, row: Record<string, unknown>, i
   document.moveDown(0.35);
   document.strokeColor("#e5e7eb").moveTo(42, document.y).lineTo(550, document.y).stroke();
   document.moveDown(0.35);
+}
+
+function renderPiHeader(document: PDFKit.PDFDocument, title: string, variant: PdfVariant, meta: ExportDocumentMeta) {
+  const docNo = documentNumber(variant);
+  document.rect(0, 0, 595.28, 72).fill("#8b1a1a");
+  document.fillColor("#ffffff").font("Helvetica-Bold").fontSize(22).text(companyName().toUpperCase(), 42, 24, { width: 250 });
+  document.fillColor("#fef2f2").font("Helvetica").fontSize(9).text(companyDetails() || "Furniture Manufacturing", 42, 49, { width: 275 });
+  document.fillColor("#ffffff").font("Helvetica-Bold").fontSize(15).text(documentTitle(title, variant).toUpperCase(), 340, 24, { width: 210, align: "right" });
+  document.font("Helvetica").fontSize(9).text(docNo, 340, 47, { width: 210, align: "right" });
+  document.fillColor("#111827").font("Helvetica").fontSize(8.5).text(`${documentNoLabel(variant)}: ${docNo}`, 42, 92, { width: 170 });
+  document.text(`Date: ${new Date().toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}`, 380, 92, { width: 170, align: "right" });
+  document.font("Helvetica-Bold").text("Project:", 42, 109, { width: 45 });
+  document.font("Helvetica").text(meta.projectName || process.env.EXPORT_PROJECT_LABEL || "Uploaded BOQ", 88, 109, { width: 240 });
+  document.font("Helvetica-Bold").text("Client:", 380, 109, { width: 45, align: "right" });
+  document.font("Helvetica").text(meta.clientName || process.env.EXPORT_CLIENT_NAME || "Client", 428, 109, { width: 122, align: "right" });
+  document.y = 138;
+  renderTableHeader(document, variant);
 }
 
 function renderTableHeader(document: PDFKit.PDFDocument, variant: PdfVariant) {
@@ -205,6 +243,14 @@ function documentNumber(variant: PdfVariant): string {
 
 function moneyOnly(value: string): string {
   return value.replace(/^INR\s*/, "");
+}
+
+function truncateWords(value: string, maxLength: number): string {
+  const compact = value.replace(/\s+/g, " ").trim();
+  if (compact.length <= maxLength) return compact;
+  const cut = compact.slice(0, maxLength);
+  const lastSpace = cut.lastIndexOf(" ");
+  return `${lastSpace > maxLength * 0.7 ? cut.slice(0, lastSpace) : cut}...`;
 }
 
 function renderLogo(document: PDFKit.PDFDocument) {
